@@ -351,8 +351,15 @@ export default function App() {
       className="relative w-screen h-screen text-white overflow-hidden select-none font-sans"
       style={{ backgroundColor: currentTheme.bgDark }}
     >
-      {/* Background Graphic Persona 5 Accent Slits */}
-      <div className="absolute inset-0 pointer-events-none opacity-20 overflow-hidden">
+      {/* Background Graphic Persona 5 Accent Slits & Dynamic Album Art Aura */}
+      <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden transition-opacity duration-700">
+        {currentTrack?.coverUrl && (
+          <img
+            src={currentTrack.coverUrl}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover blur-3xl scale-125 opacity-25 mix-blend-screen"
+          />
+        )}
         <div
           className="absolute -top-40 -left-20 w-[600px] h-[900px] transform rotate-12 blur-3xl"
           style={{

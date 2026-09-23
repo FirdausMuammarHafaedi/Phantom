@@ -13,6 +13,8 @@ import {
   RotateCcw,
   Layers,
   ChevronRight,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { playP5Sound } from '../utils/sfx';
 
@@ -46,6 +48,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const floatingStageRef = useRef<HTMLDivElement>(null);
+  const auraRef = useRef<HTMLDivElement>(null);
 
   // Queue expansion state (defaulting to always visible)
   const [internalQueueExpanded, setInternalQueueExpanded] = useState(true);
@@ -94,6 +97,13 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const stagePosRef = useRef({ x: 0, y: 0 });
   const [hasModifiedView, setHasModifiedView] = useState(false);
 
+  // 3D Optical Zoom (supports mouse wheel, pinch gesture & on-screen buttons)
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+  const zoomRef = useRef(1.0);
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartDistRef = useRef<number | null>(null);
+  const pinchStartZoomRef = useRef<number>(1.0);
+
   // Mouse hover reaction & White Hover Effect
   const [isHovered, setIsHovered] = useState(false);
   const isHoveredRef = useRef(false);
@@ -101,9 +111,6 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const currHoverTiltRef = useRef({ x: 0, y: 0 });
   const currHoverElevationRef = useRef(0);
   const currWhiteLightRef = useRef(0);
-
-  // Synchronized CSS stage position in pixels for hover aura
-  const [stageAuraPos, setStageAuraPos] = useState({ x: -180, y: 0 });
 
   // Current lyric line
   const activeLyric = useMemo(() => {
@@ -146,18 +153,18 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.95);
     scene.add(ambientLight);
 
-    const mainThemeLight = new THREE.PointLight(currentTheme.threeLight, 5.0, 45);
+    const mainThemeLight = new THREE.PointLight(currentTheme.threeLight, 3.8, 50);
     mainThemeLight.position.set(-15, 10, 15);
     scene.add(mainThemeLight);
 
-    const subLight = new THREE.PointLight(0x00d2ff, 3.5, 40);
+    const subLight = new THREE.PointLight(0x00d2ff, 2.2, 45);
     subLight.position.set(15, -10, 15);
     scene.add(subLight);
 
-    // Dedicated WHITE HOVER LIGHT: brilliant spotlight illuminating the visualizer on hover!
-    const hoverWhiteLight = new THREE.PointLight(0xffffff, 0, 50);
-    hoverWhiteLight.position.set(0, 3, 16);
-    scene.add(hoverWhiteLight);
+    // Dedicated HOVER LIGHT: subtle, elegant rim illumination that glows gently on hover
+    const hoverLight = new THREE.PointLight(currentTheme.threeLight, 0, 40);
+    hoverLight.position.set(0, 0, 14);
+    scene.add(hoverLight);
 
     // Root Group for 3D tilt, rotation & movement
     const stageGroup = new THREE.Group();
@@ -191,77 +198,150 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     let shardsGroup: THREE.Group | null = null;
     let spectrumBarsGroup: THREE.Group | null = null;
 
-    // Load cover image texture
-    const textureLoader = new THREE.TextureLoader();
-    const coverTexture = currentTrack?.coverUrl ? textureLoader.load(currentTrack.coverUrl) : null;
-    if (coverTexture) {
-      coverTexture.minFilter = THREE.LinearFilter;
-      coverTexture.magFilter = THREE.LinearFilter;
-    }
+    // Load cover image texture using an HTML canvas for 100% reliable rendering in WebGL & Electron
+    const coverCanvas = document.createElement('canvas');
+    coverCanvas.width = 512;
+    coverCanvas.height = 512;
+    const coverCtx = coverCanvas.getContext('2d')!;
 
-    // 1. PARTICLES MODE: facing directly front on the XY plane
-    const gridSize = 60;
+    // Initial procedural Persona 5 artwork
+    coverCtx.fillStyle = '#0c0e15';
+    coverCtx.fillRect(0, 0, 512, 512);
+
+    coverCtx.fillStyle = currentTheme.accent;
+    coverCtx.beginPath();
+    coverCtx.moveTo(0, 320);
+    coverCtx.lineTo(512, 200);
+    coverCtx.lineTo(512, 360);
+    coverCtx.lineTo(0, 480);
+    coverCtx.fill();
+
+    coverCtx.fillStyle = '#ffffff';
+    coverCtx.font = '900 34px sans-serif';
+    coverCtx.textAlign = 'center';
+    coverCtx.fillText((currentTrack?.title || 'PHANTOM').substring(0, 18).toUpperCase(), 256, 260);
+
+    coverCtx.fillStyle = '#ffd700';
+    coverCtx.font = '700 18px monospace';
+    coverCtx.fillText((currentTrack?.artist || 'AUDIO PLAYER').substring(0, 24).toUpperCase(), 256, 300);
+
+    const coverTexture = new THREE.CanvasTexture(coverCanvas);
+    coverTexture.minFilter = THREE.LinearFilter;
+    coverTexture.magFilter = THREE.LinearFilter;
+    coverTexture.generateMipmaps = false;
+
+    // Helper to sample cover image colors onto particle vertices
+    const sampleCoverColors = (targetColors: Float32Array, count: number, size: number) => {
+      try {
+        const imgData = coverCtx.getImageData(0, 0, 512, 512).data;
+        for (let ix = 0; ix < size; ix++) {
+          for (let iy = 0; iy < size; iy++) {
+            const idx = ix * size + iy;
+            if (idx >= count) break;
+            const u = ix / (size - 1);
+            const v = 1 - iy / (size - 1);
+            const px = Math.min(511, Math.max(0, Math.floor(u * 511)));
+            const py = Math.min(511, Math.max(0, Math.floor(v * 511)));
+            const offset = (py * 512 + px) * 4;
+            targetColors[idx * 3] = imgData[offset] / 255;
+            targetColors[idx * 3 + 1] = imgData[offset + 1] / 255;
+            targetColors[idx * 3 + 2] = imgData[offset + 2] / 255;
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    };
+
+    // Helper to create round, glowing particle sprite texture for the album cover
+    const pointCanvas = document.createElement('canvas');
+    pointCanvas.width = 64;
+    pointCanvas.height = 64;
+    const ptCtx = pointCanvas.getContext('2d')!;
+    const ptGrad = ptCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    ptGrad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    ptGrad.addColorStop(0.35, 'rgba(255, 255, 255, 0.95)');
+    ptGrad.addColorStop(0.75, 'rgba(255, 255, 255, 0.45)');
+    ptGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ptCtx.fillStyle = ptGrad;
+    ptCtx.fillRect(0, 0, 64, 64);
+    const pointTexture = new THREE.CanvasTexture(pointCanvas);
+
+    // 1. PARTICLES MODE: The album cover ITSELF is composed purely of 3D audio-reactive particles!
+    const particlesGroup = new THREE.Group();
+    const canvasSpan = 22; // Covers the whole visualizer canvas area
+
+    // Dense 96x96 particle matrix (9,216 particles) recreating the complete album artwork in points
+    const gridSize = 96;
     const numParticles = gridSize * gridSize;
     const pPositions = new Float32Array(numParticles * 3);
+    const basePPositions = new Float32Array(numParticles * 3);
     const pColors = new Float32Array(numParticles * 3);
 
-    const spacing = 0.28;
-    const half = (gridSize * spacing) / 2;
-
-    const [pR, pG, pB] = currentTheme.particleRgb;
-    const [subR, subG, subB] = currentTheme.subParticleRgb;
+    const spacing = canvasSpan / (gridSize - 1);
+    const half = canvasSpan / 2;
 
     for (let ix = 0; ix < gridSize; ix++) {
       for (let iy = 0; iy < gridSize; iy++) {
         const idx = ix * gridSize + iy;
         const x = ix * spacing - half;
         const y = iy * spacing - half;
-        const z = 0; // Front-facing XY plane
-
         pPositions[idx * 3] = x;
         pPositions[idx * 3 + 1] = y;
-        pPositions[idx * 3 + 2] = z;
+        pPositions[idx * 3 + 2] = 0;
 
-        const distCenter = Math.sqrt(x * x + y * y) / half;
-        if (distCenter < 0.35) {
-          pColors[idx * 3] = 0.98;
-          pColors[idx * 3 + 1] = 0.98;
-          pColors[idx * 3 + 2] = 1.0;
-        } else if (distCenter < 0.75) {
-          pColors[idx * 3] = pR;
-          pColors[idx * 3 + 1] = pG;
-          pColors[idx * 3 + 2] = pB;
-        } else {
-          pColors[idx * 3] = subR;
-          pColors[idx * 3 + 1] = subG;
-          pColors[idx * 3 + 2] = subB;
-        }
+        basePPositions[idx * 3] = x;
+        basePPositions[idx * 3 + 1] = y;
+        basePPositions[idx * 3 + 2] = 0;
       }
     }
+
+    // Sample initial cover artwork onto particle colors
+    sampleCoverColors(pColors, numParticles, gridSize);
 
     const pGeometry = new THREE.BufferGeometry();
     pGeometry.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
     pGeometry.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
 
     const pMaterial = new THREE.PointsMaterial({
-      size: 0.24,
+      size: 0.30,
+      map: pointTexture,
       vertexColors: true,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.98,
+      depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     particlesMesh = new THREE.Points(pGeometry, pMaterial);
+    particlesGroup.add(particlesMesh);
 
-    // WHITE HOVER ENERGY RING: An orbital halo of sparkling white star points that glows on hover
+    // When cover image loads, refresh texture & particle colors instantly
+    if (currentTrack?.coverUrl) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        coverCtx.clearRect(0, 0, 512, 512);
+        coverCtx.drawImage(img, 0, 0, 512, 512);
+        coverTexture.needsUpdate = true;
+        if (particlesMesh) {
+          const colors = particlesMesh.geometry.attributes.color.array as Float32Array;
+          sampleCoverColors(colors, numParticles, gridSize);
+          particlesMesh.geometry.attributes.color.needsUpdate = true;
+        }
+      };
+      img.src = currentTrack.coverUrl;
+    }
+
+    // HOVER ENERGY RING: An orbital halo of sparkling star points crowning the outer canvas edge
     const haloCount = 140;
     const haloPositions = new Float32Array(haloCount * 3);
     const haloColors = new Float32Array(haloCount * 3);
     for (let i = 0; i < haloCount; i++) {
       const angle = (i / haloCount) * Math.PI * 2;
-      const r = 9.8 + (Math.random() - 0.5) * 1.6;
+      const r = 13.5 + (Math.random() - 0.5) * 2.2;
       haloPositions[i * 3] = Math.cos(angle) * r;
       haloPositions[i * 3 + 1] = Math.sin(angle) * r;
-      haloPositions[i * 3 + 2] = (Math.random() - 0.5) * 0.9;
+      haloPositions[i * 3 + 2] = (Math.random() - 0.5) * 1.2;
       haloColors[i * 3] = 1.0;
       haloColors[i * 3 + 1] = 1.0;
       haloColors[i * 3 + 2] = 1.0;
@@ -279,17 +359,17 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const haloMesh = new THREE.Points(haloGeo, haloMat);
     stageGroup.add(haloMesh);
 
-    // 2. CLOTH WAVE MODE: facing front XY plane
-    const clothGeo = new THREE.PlaneGeometry(15, 15, 48, 48);
+    // 2. CLOTH WAVE MODE: facing front XY plane across the entire 22x22 canvas
+    const clothGeo = new THREE.PlaneGeometry(canvasSpan, canvasSpan, 56, 56);
     const clothMat = new THREE.MeshStandardMaterial({
       map: coverTexture,
       side: THREE.DoubleSide,
       roughness: 0.3,
-      metalness: 0.45,
+      metalness: 0.35,
     });
     clothMesh = new THREE.Mesh(clothGeo, clothMat);
 
-    // 3. PERSONA 5 VINYL & SHARDS MODE: facing front towards camera
+    // 3. PERSONA 5 VINYL & SHARDS MODE
     vinylGroup = new THREE.Group();
     const discGeo = new THREE.CylinderGeometry(7.2, 7.2, 0.2, 48);
     const discMat = new THREE.MeshStandardMaterial({
@@ -298,7 +378,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       metalness: 0.8,
     });
     const disc = new THREE.Mesh(discGeo, discMat);
-    disc.rotation.x = Math.PI / 2; // Face forward
+    disc.rotation.x = Math.PI / 2;
     vinylGroup.add(disc);
 
     const labelGeo = new THREE.CylinderGeometry(2.6, 2.6, 0.22, 32);
@@ -316,84 +396,106 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       });
       const shard = new THREE.Mesh(shardGeo, shardMat);
       const angle = (s / 24) * Math.PI * 2;
-      const radius = 9.2 + Math.random() * 3.2;
-      shard.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, (Math.random() - 0.5) * 4);
+      const radius = 8.5 + Math.random() * 2.5;
+      shard.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, (Math.random() - 0.5) * 3);
       shardsGroup.add(shard);
     }
     vinylGroup.add(shardsGroup);
 
-    // 4. SPECTRUM 3D BARS: facing front
+    // 4. SPECTRUM 3D BARS: full cover center backdrop surrounded by 32 dynamic spectrum bars
     spectrumBarsGroup = new THREE.Group();
+    const spectrumCoverGeo = new THREE.PlaneGeometry(16, 16);
+    const spectrumCoverMat = new THREE.MeshStandardMaterial({
+      map: coverTexture,
+      side: THREE.DoubleSide,
+      roughness: 0.35,
+    });
+    const spectrumCoverMesh = new THREE.Mesh(spectrumCoverGeo, spectrumCoverMat);
+    spectrumCoverMesh.position.z = -0.1;
+    spectrumBarsGroup.add(spectrumCoverMesh);
+
     const barCount = 32;
     const barMeshes: THREE.Mesh[] = [];
     for (let b = 0; b < barCount; b++) {
-      const bGeo = new THREE.BoxGeometry(0.35, 1, 0.35);
+      const bGeo = new THREE.BoxGeometry(0.4, 1, 0.4);
       const bMat = new THREE.MeshBasicMaterial({
         color: b % 2 === 0 ? currentTheme.threeLight : 0xffffff,
       });
       const bMesh = new THREE.Mesh(bGeo, bMat);
       const angle = (b / barCount) * Math.PI * 2;
-      const radius = 8.2;
+      const radius = 10.2;
       bMesh.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
       bMesh.rotation.z = angle - Math.PI / 2;
       spectrumBarsGroup.add(bMesh);
       barMeshes.push(bMesh);
     }
 
-    // Attach active mode
+    // Attach active mode to the stage
     if (mode === 'particles') {
-      stageGroup.add(particlesMesh);
+      stageGroup.add(particlesGroup);
     } else if (mode === 'clothWave') {
       stageGroup.add(clothMesh);
     } else if (mode === 'p5Vinyl') {
       stageGroup.add(vinylGroup);
-    } else {
+    } else if (mode === 'spectrum3D') {
       stageGroup.add(spectrumBarsGroup);
     }
 
-    // Animation Loop
+    // Animation Loop with smooth audio damping for chill visuals
     let animationFrameId: number;
     const clock = new THREE.Clock();
     let playWeight = isPlaying ? 1.0 : 0.0;
 
+    let smoothBass = 0;
+    let smoothMids = 0;
+    let smoothHighs = 0;
+
     const render = () => {
       animationFrameId = requestAnimationFrame(render);
 
-      const delta = clock.getDelta();
       const elapsed = clock.getElapsedTime();
 
-      // Retrieve audio frequencies
+      // Retrieve audio frequencies with low-pass exponential smoothing for chill visuals
       const freq = globalAudioEngine.getFrequencyData();
-      const bassAvg = (freq[1] + freq[2] + freq[3] + freq[4]) / 4 / 255;
-      const midAvg = (freq[12] + freq[14] + freq[16]) / 3 / 255;
+      const rawBass = (freq[1] + freq[2] + freq[3] + freq[4]) / 4 / 255;
+      const rawMids = (freq[12] + freq[14] + freq[16]) / 3 / 255;
+      const rawHighs = (freq[30] + freq[32] + freq[34]) / 3 / 255;
+
+      smoothBass += (rawBass - smoothBass) * 0.08;
+      smoothMids += (rawMids - smoothMids) * 0.08;
+      smoothHighs += (rawHighs - smoothHighs) * 0.08;
 
       const targetPlay = isPlaying ? 1.0 : 0.0;
-      playWeight += (targetPlay - playWeight) * 0.08;
+      playWeight += (targetPlay - playWeight) * 0.06;
       if (!isPlaying && playWeight < 0.002) {
         playWeight = 0;
       }
 
-      // Gentle idle breathing
-      const idleHoverY = Math.sin(elapsed * 1.3) * 0.35;
+      // Chill idle breathing (slow, relaxing sine wave)
+      const idleHoverY = Math.sin(elapsed * 0.8) * 0.22;
 
-      // Interactive hover tilt & elevation
+      // Interactive hover tilt & elevation: gentle spring easing
       const isCurrentlyHovered = isHoveredRef.current;
-      const targetHoverTiltX = isCurrentlyHovered ? -mouseHoverRef.current.y * 0.12 : 0;
-      const targetHoverTiltY = isCurrentlyHovered ? mouseHoverRef.current.x * 0.14 : 0;
-      const targetHoverElevation = isCurrentlyHovered ? 2.0 : 0;
+      const targetHoverTiltX = isCurrentlyHovered ? -mouseHoverRef.current.y * 0.16 : 0;
+      const targetHoverTiltY = isCurrentlyHovered ? mouseHoverRef.current.x * 0.18 : 0;
+      const targetHoverElevation = isCurrentlyHovered ? 1.4 : 0;
 
-      currHoverTiltRef.current.x += (targetHoverTiltX - currHoverTiltRef.current.x) * 0.06;
-      currHoverTiltRef.current.y += (targetHoverTiltY - currHoverTiltRef.current.y) * 0.06;
-      currHoverElevationRef.current += (targetHoverElevation - currHoverElevationRef.current) * 0.06;
+      currHoverTiltRef.current.x += (targetHoverTiltX - currHoverTiltRef.current.x) * 0.05;
+      currHoverTiltRef.current.y += (targetHoverTiltY - currHoverTiltRef.current.y) * 0.05;
+      currHoverElevationRef.current += (targetHoverElevation - currHoverElevationRef.current) * 0.05;
 
-      // WHITE HOVER EFFECT INTENSITY (Smooth lerp up to 7.0)
-      const targetWhite = isCurrentlyHovered ? 7.0 : 0.0;
-      currWhiteLightRef.current += (targetWhite - currWhiteLightRef.current) * 0.09;
-      hoverWhiteLight.intensity = currWhiteLightRef.current;
+      // Soft Persona 5 theme light intensity on hover (max 2.0, subtle and classy)
+      const targetGlow = isCurrentlyHovered ? 2.0 : 0.0;
+      currWhiteLightRef.current += (targetGlow - currWhiteLightRef.current) * 0.07;
+      hoverLight.intensity = currWhiteLightRef.current;
 
-      // White halo starlight spin & opacity
-      haloMesh.rotation.z += 0.012 + bassAvg * 0.02;
-      haloMat.opacity = (currWhiteLightRef.current / 7.0) * 0.95;
+      // Gentle starlight halo spin & opacity
+      haloMesh.rotation.z += 0.004 + smoothBass * 0.01;
+      haloMat.opacity = (currWhiteLightRef.current / 2.0) * 0.75;
+
+      // Chill beat breathing for the whole visualizer stage
+      const beatScale = 1.0 + smoothBass * 0.035 * playWeight;
+      stageGroup.scale.set(beatScale, beatScale, beatScale);
 
       // Stage position combining base offset, manual pan/move, and idle levitation
       stageGroup.position.x = baseOffsetX + stagePosRef.current.x;
@@ -403,52 +505,86 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       // Orbit rotation + autoRotate + interactive hover tilt
       const baseRotX = rotationRef.current.x;
       const baseRotY = rotationRef.current.y;
-      const autoRotY = autoRotate ? elapsed * 0.25 : 0;
+      const autoRotY = autoRotate ? elapsed * 0.2 : 0;
 
       stageGroup.rotation.x = baseRotX + currHoverTiltRef.current.x;
       stageGroup.rotation.y = baseRotY + autoRotY + currHoverTiltRef.current.y;
       stageGroup.rotation.z = 0;
 
-      // Synchronize CSS 3D Floating Stage with exact WebGL camera and stage orientation
+      // Optical Camera Zoom: smoothly lerp camera Z based on zoomRef
+      const targetCameraZ = 32 / (zoomRef.current || 1.0);
+      camera.position.z += (targetCameraZ - camera.position.z) * 0.1;
+
+      // Current 3D optical zoom factor relative to default camera distance (32)
+      const currentZoom = 32 / (camera.position.z || 32);
+      const compositeScale = currentZoom * beatScale;
+
+      // Synchronize CSS 3D Floating Stage (Lyrics, 3D Queue stack) with exact WebGL camera, position & zoom
       const currentH = containerRef.current ? containerRef.current.clientHeight : 800;
       const pixelsPerUnit = currentH / 26.51;
 
       const degX = (stageGroup.rotation.x * 180) / Math.PI;
       const degY = (stageGroup.rotation.y * 180) / Math.PI;
       const degZ = (stageGroup.rotation.z * 180) / Math.PI;
-      const pixelX = stageGroup.position.x * pixelsPerUnit;
-      const pixelY = -stageGroup.position.y * pixelsPerUnit;
-      const pixelZ = stageGroup.position.z * pixelsPerUnit;
+      // Screen projection coordinates scale precisely with camera optical zoom
+      const pixelX = stageGroup.position.x * pixelsPerUnit * currentZoom;
+      const pixelY = -stageGroup.position.y * pixelsPerUnit * currentZoom;
+      const pixelZ = stageGroup.position.z * pixelsPerUnit * currentZoom;
 
       if (floatingStageRef.current) {
         floatingStageRef.current.style.transform = `
           translate3d(${pixelX}px, ${pixelY}px, ${pixelZ}px)
+          scale3d(${compositeScale}, ${compositeScale}, ${compositeScale})
           rotateX(${degX}deg)
           rotateY(${degY}deg)
           rotateZ(${degZ}deg)
         `;
       }
 
-      // Update CSS aura coordinates periodically
-      setStageAuraPos({ x: pixelX, y: pixelY });
+      // Update soft theme aura flare to follow visualizer position and zoom
+      if (auraRef.current) {
+        auraRef.current.style.transform = `
+          translate(-50%, -50%)
+          translate3d(${pixelX}px, ${pixelY}px, 0px)
+          scale(${compositeScale * (isHoveredRef.current ? 1.12 : 0.88)})
+        `;
+      }
 
-      // Visualizer animations: Facing front XY with Z depth displacement
+      // Visualizer animations: Whole canvas reacts with audio-reactive particle displacement
       if (mode === 'particles' && particlesMesh) {
         const positions = particlesMesh.geometry.attributes.position.array as Float32Array;
-        pMaterial.size = 0.24 + (currWhiteLightRef.current / 7.0) * 0.08 + bassAvg * 0.06;
+        // Dynamically scale particle point size with zoom and bass for clarity
+        pMaterial.size = (0.28 + smoothBass * 0.08) * Math.max(0.65, Math.min(1.4, zoomRef.current));
 
         for (let i = 0; i < numParticles; i++) {
+          const baseX = basePPositions[i * 3];
+          const baseY = basePPositions[i * 3 + 1];
+          const dist = Math.sqrt(baseX * baseX + baseY * baseY);
+          const normDist = Math.min(1.0, dist / half);
+
           if (playWeight === 0) {
-            positions[i * 3 + 2] = 0;
+            // Idle state: particles rest in the exact form of the album cover with subtle holographic breath
+            positions[i * 3] = baseX;
+            positions[i * 3 + 1] = baseY;
+            positions[i * 3 + 2] = Math.sin(dist * 0.28 + elapsed * 0.8) * 0.1;
           } else {
-            const ix = Math.floor(i / gridSize);
-            const iy = i % gridSize;
-            const freqIndex = (ix * 2 + iy * 2) % 64;
-            const audioAmp = (freq[freqIndex] || 0) / 255;
+            // Audio frequency band for this particle based on radial distance
+            const freqIdx = Math.min(63, Math.floor(normDist * 54));
+            const freqAmp = (freq[freqIdx] || 0) / 255;
 
-            const wave = Math.sin(ix * 0.25 + elapsed * 2.5) * Math.cos(iy * 0.25 + elapsed * 2.2);
-            const zDisplacement = (wave * 0.8 + audioAmp * 4.2) * (1 + bassAvg * 1.5) * playWeight;
+            // Concentric audio ripple wave
+            const wave = Math.sin(dist * 0.55 - elapsed * 2.2);
 
+            // Punchy bass lift at the center of the album cover
+            const bassPunch = Math.max(0, 1.0 - normDist * 0.85) * smoothBass * 2.8;
+
+            // Z displacement lifting particles into 3D space
+            const zDisplacement = (wave * 0.65 + freqAmp * 2.0 + bassPunch) * playWeight;
+
+            // Subtle dynamic fluid breathing dispersion on beats
+            const xyPush = Math.sin(elapsed * 1.8 + dist * 0.8) * smoothBass * 0.1 * playWeight;
+            positions[i * 3] = baseX + (baseX / (dist + 0.1)) * xyPush;
+            positions[i * 3 + 1] = baseY + (baseY / (dist + 0.1)) * xyPush;
             positions[i * 3 + 2] = zDisplacement;
           }
         }
@@ -458,28 +594,27 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         const count = positions.length / 3;
         for (let i = 0; i < count; i++) {
           if (playWeight === 0) {
-            positions[i * 3 + 2] = 0;
+            positions[i * 3 + 2] = Math.sin(positions[i * 3] * 0.25 + elapsed * 0.8) * 0.15;
           } else {
             const u = positions[i * 3];
             const v = positions[i * 3 + 1];
             const dist = Math.sqrt(u * u + v * v);
-            const waveZ = Math.sin(dist * 0.8 - elapsed * 3.5) * (1.2 + midAvg * 3.5) * playWeight;
+            const waveZ = Math.sin(dist * 0.45 - elapsed * 1.1) * (0.6 + smoothMids * 1.2) * playWeight;
             positions[i * 3 + 2] = waveZ;
           }
         }
         clothMesh.geometry.attributes.position.needsUpdate = true;
       } else if (mode === 'p5Vinyl' && vinylGroup) {
         if (playWeight > 0.001) {
-          vinylGroup.rotation.z += (0.025 + bassAvg * 0.03) * playWeight;
-          if (shardsGroup) shardsGroup.rotation.z -= 0.015 * playWeight;
-          const scale = 1 + bassAvg * 0.18 * playWeight;
-          vinylGroup.scale.set(scale, scale, scale);
+          vinylGroup.rotation.z -= (0.015 + smoothMids * 0.015) * playWeight;
+          if (shardsGroup) shardsGroup.rotation.z += (0.008 + smoothHighs * 0.01) * playWeight;
         }
       } else if (mode === 'spectrum3D' && spectrumBarsGroup) {
         for (let b = 0; b < barCount; b++) {
           const val = (freq[b * 2] || 0) / 255;
           const bar = barMeshes[b];
-          bar.scale.y = Math.max(0.08, val * 9 * playWeight);
+          const targetH = Math.max(0.08, val * 4.5 * playWeight);
+          bar.scale.y += (targetH - bar.scale.y) * 0.15;
         }
       }
 
@@ -508,6 +643,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     return () => {
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animationFrameId);
+      pointTexture.dispose();
       pGeometry.dispose();
       pMaterial.dispose();
       haloGeo.dispose();
@@ -518,14 +654,29 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       discMat.dispose();
       labelGeo.dispose();
       labelMat.dispose();
+      spectrumCoverGeo.dispose();
+      spectrumCoverMat.dispose();
+      coverTexture.dispose();
       renderer.dispose();
     };
   }, [mode, currentTrack, isPlaying, autoRotate, currentTheme]);
 
-  // Pointer drag to orbit OR right-click / shift-drag to move
+  // Pointer drag to orbit, multi-touch pinch to zoom, OR right-click / shift-drag to move
   const handlePointerDown = (e: React.PointerEvent) => {
     // If clicking on controls, don't drag
     if ((e.target as HTMLElement).closest('button, input, a, .pointer-events-auto')) return;
+
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    // Multi-touch pinch zoom detection (e.g. 2 fingers on touchscreen/trackpad)
+    if (activePointersRef.current.size === 2) {
+      const pts = Array.from(activePointersRef.current.values());
+      pinchStartDistRef.current = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      pinchStartZoomRef.current = zoomRef.current;
+      isDraggingRef.current = false;
+      isPanningRef.current = false;
+      return;
+    }
 
     if (e.button === 2 || e.shiftKey) {
       isPanningRef.current = true;
@@ -558,6 +709,22 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       }
     }
 
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // Handle 2-finger pinch zoom
+    if (activePointersRef.current.size === 2 && pinchStartDistRef.current) {
+      const pts = Array.from(activePointersRef.current.values());
+      const currentDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const ratio = currentDist / pinchStartDistRef.current;
+      const nextZoom = Math.max(0.35, Math.min(2.5, +(pinchStartZoomRef.current * ratio).toFixed(2)));
+      zoomRef.current = nextZoom;
+      setZoomLevel(nextZoom);
+      setHasModifiedView(true);
+      return;
+    }
+
     if (!isDraggingRef.current && !isPanningRef.current) return;
 
     const deltaX = e.clientX - dragStartRef.current.x;
@@ -588,22 +755,46 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     }
   };
 
-  const handlePointerUp = () => {
-    isDraggingRef.current = false;
-    isPanningRef.current = false;
+  const handlePointerUp = (e: React.PointerEvent) => {
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size < 2) {
+      pinchStartDistRef.current = null;
+    }
+    if (activePointersRef.current.size === 0) {
+      isDraggingRef.current = false;
+      isPanningRef.current = false;
+    }
   };
 
-  const handlePointerLeave = () => {
-    isDraggingRef.current = false;
-    isPanningRef.current = false;
-    mouseHoverRef.current.isHovered = false;
-    isHoveredRef.current = false;
-    setIsHovered(false);
+  const handlePointerLeave = (e: React.PointerEvent) => {
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size === 0) {
+      isDraggingRef.current = false;
+      isPanningRef.current = false;
+      mouseHoverRef.current.isHovered = false;
+      isHoveredRef.current = false;
+      setIsHovered(false);
+    }
+  };
+
+  // Mouse wheel zoom (zoom out / zoom in)
+  const handleWheel = (e: React.WheelEvent) => {
+    if ((e.target as HTMLElement).closest('.overflow-y-auto, .overflow-x-auto, button')) return;
+    e.preventDefault();
+    const zoomDelta = -Math.sign(e.deltaY) * 0.12;
+    setZoomLevel((prev) => {
+      const next = Math.max(0.35, Math.min(2.5, +(prev + zoomDelta).toFixed(2)));
+      zoomRef.current = next;
+      setHasModifiedView(true);
+      return next;
+    });
   };
 
   const handleResetView = () => {
     rotationRef.current = { ...defaultRotation };
     stagePosRef.current = { x: 0, y: 0 };
+    zoomRef.current = 1.0;
+    setZoomLevel(1.0);
     setHasModifiedView(false);
   };
 
@@ -619,24 +810,25 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerLeave}
+      onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* Dynamic 3D WebGL Canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block pointer-events-none" />
 
-      {/* WHITE HOVER EFFECT: Radiant Comic Energy Flare behind the Visualizer */}
+      {/* REFINED HOVER EFFECT: Soft Theme Flare behind the Visualizer */}
       <div
-        className="absolute pointer-events-none transition-all duration-500 ease-out"
+        ref={auraRef}
+        className="absolute pointer-events-none transition-opacity duration-700 ease-out"
         style={{
-          opacity: isHovered ? 0.42 : 0,
-          transform: `translate(-50%, -50%) scale(${isHovered ? 1.15 : 0.85})`,
-          background:
-            'radial-gradient(circle, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.25) 35%, transparent 70%)',
+          opacity: isHovered ? 0.28 : 0,
+          background: `radial-gradient(circle, ${currentTheme.accent} 0%, rgba(255, 215, 0, 0.18) 35%, transparent 70%)`,
           width: '680px',
           height: '680px',
-          left: `calc(50% + ${stageAuraPos.x}px)`,
-          top: `calc(50% + ${stageAuraPos.y}px)`,
-          filter: 'blur(34px)',
+          left: '50%',
+          top: '50%',
+          filter: 'blur(38px)',
+          willChange: 'transform',
         }}
       />
 
@@ -796,10 +988,10 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                           playP5Sound('select');
                           if (onSelectTrack) onSelectTrack(track);
                         }}
-                        className={`group relative p-2.5 rounded-none cursor-pointer transition-all duration-200 border-2 ${
+                        className={`group relative p-2.5 rounded-none cursor-pointer transition-all duration-200 border-2 hover:translate-x-1.5 ${
                           isCurrent
                             ? 'bg-[#151722] border-white'
-                            : 'bg-[#0f1118]/90 hover:bg-[#181a26] border-black/80 hover:border-white/40'
+                            : 'bg-[#0f1118]/90 hover:bg-[#191c2b] border-black/80 hover:border-[#ffd700]'
                         }`}
                         style={{
                           borderColor: isCurrent ? currentTheme.accent : undefined,
@@ -934,21 +1126,71 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         </div>
       )}
 
-      {/* RESET 3D VIEW BUTTON: Appears if user dragged or moved the visualizer */}
-      {hasModifiedView && (
+      {/* 3D CAMERA & ZOOM CONTROLS HUD */}
+      <div
+        className="absolute bottom-28 sm:bottom-4 right-4 sm:right-6 z-20 flex items-center gap-1.5 pointer-events-auto bg-[#0c0d12]/95 backdrop-blur-md p-1 border-2 border-black p5-badge-cut shadow-[3px_3px_0px_#000]"
+        style={{ borderColor: currentTheme.accent }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {/* Zoom Out Button */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            playP5Sound('slash');
-            handleResetView();
+          onClick={() => {
+            playP5Sound('select');
+            setZoomLevel((prev) => {
+              const next = Math.max(0.35, +(prev - 0.15).toFixed(2));
+              zoomRef.current = next;
+              setHasModifiedView(true);
+              return next;
+            });
           }}
-          className="absolute bottom-28 sm:bottom-4 right-4 sm:right-6 z-20 pointer-events-auto p5-badge-cut px-3 py-1 bg-black/90 text-[#ffd700] hover:text-white border-2 border-[#ffd700] text-xs font-mono font-bold tracking-wider flex items-center gap-1.5 cursor-pointer shadow-[3px_3px_0px_#000] active:scale-95 transition-all"
-          title="Reset Visualizer Orbit & Position"
+          title="Zoom Out (or Scroll Wheel Down)"
+          className="p-1 sm:p-1.5 bg-[#15161f] hover:bg-[#252838] text-white/90 hover:text-white border border-black p5-badge-cut cursor-pointer active:scale-95 transition-all"
         >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>RESET 3D VIEW</span>
+          <ZoomOut className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
         </button>
-      )}
+
+        {/* Current Zoom Badge */}
+        <div
+          className="px-2 py-0.5 sm:py-1 bg-black text-[10px] sm:text-[11px] font-mono font-bold tracking-wider select-none border border-white/10"
+          style={{ color: currentTheme.accent }}
+          title="Current 3D Zoom Level"
+        >
+          {Math.round(zoomLevel * 100)}%
+        </div>
+
+        {/* Zoom In Button */}
+        <button
+          onClick={() => {
+            playP5Sound('select');
+            setZoomLevel((prev) => {
+              const next = Math.min(2.5, +(prev + 0.15).toFixed(2));
+              zoomRef.current = next;
+              setHasModifiedView(true);
+              return next;
+            });
+          }}
+          title="Zoom In (or Scroll Wheel Up)"
+          className="p-1 sm:p-1.5 bg-[#15161f] hover:bg-[#252838] text-white/90 hover:text-white border border-black p5-badge-cut cursor-pointer active:scale-95 transition-all"
+        >
+          <ZoomIn className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
+        </button>
+
+        {/* RESET 3D VIEW BUTTON: Appears if user dragged, moved, or zoomed the visualizer */}
+        {hasModifiedView && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              playP5Sound('slash');
+              handleResetView();
+            }}
+            className="p5-badge-cut px-2 sm:px-2.5 py-0.5 sm:py-1 bg-black text-[#ffd700] hover:text-white border border-[#ffd700] text-[10px] sm:text-xs font-mono font-bold tracking-wider flex items-center gap-1 cursor-pointer active:scale-95 transition-all ml-0.5"
+            title="Reset Orbit, Position & Zoom to Default"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>RESET</span>
+          </button>
+        )}
+      </div>
 
       {/* Mode Controls Bar */}
       <div
@@ -1016,7 +1258,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           style={{ boxShadow: `2px 2px 0px ${currentTheme.accent}` }}
         >
           <Eye className="w-3 h-3 text-[#ffd700]" />
-          <span>DRAG 3D ORBIT // SHIFT+DRAG MOVE // HOVER FOR WHITE GLOW</span>
+          <span>DRAG 3D ORBIT // SHIFT+DRAG MOVE // WHEEL / PINCH ZOOM // HOVER GLOW</span>
         </div>
       </div>
     </div>

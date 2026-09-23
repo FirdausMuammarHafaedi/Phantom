@@ -151,18 +151,23 @@ export async function extractId3Metadata(file: File): Promise<{
   coverUrl?: string;
 }> {
   try {
-    const buffer = await file.slice(0, 512 * 1024).arrayBuffer(); // Read first 512KB
-    const view = new DataView(buffer);
+    // 1. Check ID3v2 (MP3, WAV, etc.)
+    const headerBuffer = await file.slice(0, 10).arrayBuffer();
+    const viewHeader = new DataView(headerBuffer);
 
-    // Check "ID3" identifier
-    if (view.getUint8(0) === 0x49 && view.getUint8(1) === 0x44 && view.getUint8(2) === 0x33) {
-      const version = view.getUint8(3);
-      // Syncsafe integer for size
+    if (viewHeader.byteLength >= 10 && viewHeader.getUint8(0) === 0x49 && viewHeader.getUint8(1) === 0x44 && viewHeader.getUint8(2) === 0x33) {
+      const version = viewHeader.getUint8(3);
+      // Syncsafe integer for total ID3 tag size
       const tagSize =
-        ((view.getUint8(6) & 0x7f) << 21) |
-        ((view.getUint8(7) & 0x7f) << 14) |
-        ((view.getUint8(8) & 0x7f) << 7) |
-        (view.getUint8(9) & 0x7f);
+        ((viewHeader.getUint8(6) & 0x7f) << 21) |
+        ((viewHeader.getUint8(7) & 0x7f) << 14) |
+        ((viewHeader.getUint8(8) & 0x7f) << 7) |
+        (viewHeader.getUint8(9) & 0x7f);
+
+      // Read the entire tag (cap at 12MB to avoid memory exhaustion)
+      const readSize = Math.min(file.size, tagSize + 10, 12 * 1024 * 1024);
+      const buffer = await file.slice(0, readSize).arrayBuffer();
+      const view = new DataView(buffer);
 
       let offset = 10;
       let title: string | undefined;
@@ -251,6 +256,55 @@ export async function extractId3Metadata(file: File): Promise<{
       }
 
       return { title, artist, album, coverUrl };
+    }
+
+    // 2. Check FLAC Header (fLaC)
+    const flacHeader = await file.slice(0, 4).arrayBuffer();
+    const flacStr = String.fromCharCode(...new Uint8Array(flacHeader));
+    if (flacStr === 'fLaC') {
+      const flacSlice = await file.slice(4, Math.min(file.size, 8 * 1024 * 1024)).arrayBuffer();
+      const flacView = new DataView(flacSlice);
+      let offset = 0;
+      let isLast = false;
+
+      while (offset + 4 <= flacView.byteLength && !isLast) {
+        const headerByte = flacView.getUint8(offset);
+        isLast = (headerByte & 0x80) !== 0;
+        const blockType = headerByte & 0x7f;
+        const blockLen = (flacView.getUint8(offset + 1) << 16) | (flacView.getUint8(offset + 2) << 8) | flacView.getUint8(offset + 3);
+
+        if (offset + 4 + blockLen > flacView.byteLength) break;
+
+        // Block type 6 is PICTURE
+        if (blockType === 6) {
+          try {
+            let pOffset = offset + 4;
+            pOffset += 4; // picture type
+            const mimeLen = flacView.getUint32(pOffset, false);
+            pOffset += 4;
+            const mimeBytes = new Uint8Array(flacSlice, pOffset, mimeLen);
+            const mimeType = new TextDecoder().decode(mimeBytes) || 'image/jpeg';
+            pOffset += mimeLen;
+
+            const descLen = flacView.getUint32(pOffset, false);
+            pOffset += 4 + descLen; // description
+            pOffset += 16; // width (4), height (4), depth (4), colors (4)
+
+            const dataLen = flacView.getUint32(pOffset, false);
+            pOffset += 4;
+
+            if (pOffset + dataLen <= flacView.byteLength) {
+              const imgBytes = new Uint8Array(flacSlice, pOffset, dataLen);
+              const blob = new Blob([imgBytes], { type: mimeType });
+              return { coverUrl: URL.createObjectURL(blob) };
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        offset += 4 + blockLen;
+      }
     }
   } catch {
     // Return empty on non-id3 or unreadable
