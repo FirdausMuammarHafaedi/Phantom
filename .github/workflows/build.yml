@@ -25,6 +25,8 @@ jobs:
         run: npm install --legacy-peer-deps
 
       - name: Build Windows executable
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run build-exe
 
       - name: Upload Windows executable artifact
