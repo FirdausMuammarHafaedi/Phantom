@@ -23,6 +23,7 @@ function createWindow() {
 
   // Load the compiled Vite app
   win.loadFile(path.join(__dirname, 'dist', 'index.html')).catch(() => {
+    win.webContents.openDevTools();
     // Development fallback if dist is not yet built
     win.loadURL('http://localhost:3000');
   });
