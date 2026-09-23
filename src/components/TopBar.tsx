@@ -114,7 +114,7 @@ export const TopBar: React.FC<Props> = ({
 
           <div className="hidden lg:flex items-center gap-2.5 text-xs font-mono tracking-widest text-white/80 bg-black/60 px-3 py-1 border border-black shadow-[2px_2px_0px_#000]">
             <Flame className="w-4 h-4" style={{ color: currentTheme.accent }} />
-            <span className="font-extrabold text-white">PHANTOM AUDIO</span>
+            <span className="font-extrabold text-white">PHANTOM</span>
             <span className="text-white/30">•</span>
             <span className="text-[#ffd700]">COMIC EDITION</span>
           </div>

@@ -1,5 +1,5 @@
 {
-  "name": "Persona 5 Offline Audio Player",
+  "name": "Phantom",
   "description": "A lightweight, offline-first local audio player with Persona 5 aesthetic, 3D audio-reactive visualizer, and local directory scanning.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

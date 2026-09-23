@@ -11,7 +11,7 @@ function createWindow() {
     height: 800,
     minWidth: 800,
     minHeight: 600,
-    title: 'Persona 5 Audio Player',
+    title: 'Phantom',
     backgroundColor: '#090b10',
     autoHideMenuBar: true,
     webPreferences: {

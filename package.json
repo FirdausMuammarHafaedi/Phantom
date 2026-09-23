@@ -44,8 +44,8 @@
     "vite-plugin-pwa": "^1.3.0"
   },
   "build": {
-    "appId": "com.persona.audioplayer",
-    "productName": "Persona 5 Audio Player",
+    "appId": "com.persona.phantom",
+    "productName": "Phantom",
     "directories": {
       "output": "release"
     },

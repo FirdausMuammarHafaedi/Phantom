@@ -32,7 +32,7 @@ jobs:
       - name: Upload Windows executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Persona-5-Audio-Player-Windows
+          name: Phantom-Windows
           path: |
             release/*.exe
             dist/*.exe
