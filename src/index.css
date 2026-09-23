@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: 'Bebas Neue', 'Impact', sans-serif;
+  --font-tech: 'Rajdhani', sans-serif;
+  --font-sans: 'Plus Jakarta Sans', sans-serif;
+}
+
+/* Persona 5 Dynamic Styling Utilities */
+.p5-halftone {
+  /* Pattern removed for a clean, unstacked modern background */
+  background: transparent;
+}
+
+.p5-speedlines {
+  background: repeating-conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.03) 0deg 2deg,
+    transparent 2deg 10deg,
+    rgba(255, 255, 255, 0.015) 10deg 12deg,
+    transparent 12deg 20deg
+  );
+}
+
+.p5-comic-border {
+  border: 2px solid #000000;
+  box-shadow: 4px 4px 0px var(--theme-accent, #e60012);
+}
+
+.p5-comic-card {
+  border: 3px solid #000000;
+  box-shadow: 6px 6px 0px var(--theme-accent, #e60012);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.p5-comic-card:hover {
+  transform: translate(-3px, -3px);
+  box-shadow: 9px 9px 0px var(--theme-accent, #e60012);
+}
+
+.p5-speech-bubble {
+  position: relative;
+  border: 3px solid #000000;
+  box-shadow: 5px 5px 0px var(--theme-accent, #e60012);
+}
+
+.p5-speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -14px;
+  left: 36px;
+  width: 0;
+  height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-top: 14px solid #ffffff;
+}
+
+.p5-speech-bubble::before {
+  content: '';
+  position: absolute;
+  bottom: -18px;
+  left: 34px;
+  width: 0;
+  height: 0;
+  border-left: 16px solid transparent;
+  border-right: 16px solid transparent;
+  border-top: 16px solid #000000;
+}
+
+.p5-sfx-sticker {
+  border: 2px solid #000;
+  box-shadow: 3px 3px 0px #000;
+  transform: skewX(-8deg) rotate(-2deg);
+}
+
+.p5-stars {
+  background-image: radial-gradient(rgba(255, 215, 0, 0.25) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.p5-skew {
+  transform: skewX(-10deg);
+}
+
+.p5-unskew {
+  transform: skewX(10deg);
+}
+
+.p5-badge-cut {
+  clip-path: polygon(10px 0%, 100% 0%, calc(100% - 10px) 100%, 0% 100%);
+}
+
+.p5-card-cut {
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px));
+}
+
+.p5-dialog-cut {
+  clip-path: polygon(0% 0%, 96% 0%, 100% 12%, 100% 100%, 4% 100%, 0% 88%);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #101116;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--theme-accent, #e60012);
+  border-radius: 0px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-accent-hover, #ff1a2b);
+}
