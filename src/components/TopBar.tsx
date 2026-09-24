@@ -122,7 +122,7 @@ export const TopBar: React.FC<Props> = ({
 
         {/* RIGHT: Quick File & Folder Upload + Theme Selector */}
         <div
-          className="flex items-center gap-1 sm:gap-2 pointer-events-auto bg-[#0c0d12]/95 backdrop-blur-md p-1 sm:p-1.5 border-2 border-black p5-badge-cut"
+          className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto bg-[#0c0d12]/95 backdrop-blur-md py-1 sm:py-1.5 pl-4 sm:pl-5 pr-3 sm:pr-4 border-2 border-black p5-badge-cut"
           style={{ boxShadow: `3px 3px 0px ${currentTheme.accent}` }}
         >
           {/* Theme Palette Switcher Button */}
@@ -131,19 +131,19 @@ export const TopBar: React.FC<Props> = ({
               playP5Sound('click');
               onOpenThemeSelector();
             }}
-            className="px-2 py-1 text-xs font-mono font-black tracking-wider text-white hover:text-white flex items-center gap-1 transition-colors cursor-pointer border border-black/40"
+            className="px-2.5 sm:px-3 py-1 text-xs font-mono font-black tracking-wider text-white hover:text-white flex items-center gap-2 transition-colors cursor-pointer border border-black/40 shadow-sm"
             style={{ backgroundColor: `${currentTheme.accent}33` }}
             title="Change Color Theme & Comic Style"
           >
-            <div
-              className="w-3 h-3 border border-black shadow-sm"
+            <span
+              className="w-2.5 h-2.5 border border-black shadow-[1px_1px_0px_#000] flex-shrink-0"
               style={{ backgroundColor: currentTheme.accent }}
             />
-            <Palette className="w-3.5 h-3.5 text-[#ffd700]" />
-            <span className="hidden md:inline font-mono">{currentTheme.name}</span>
+            <Palette className="w-3.5 h-3.5 text-[#ffd700] flex-shrink-0" />
+            <span className="hidden md:inline font-mono ml-0.5 tracking-wide">{currentTheme.name}</span>
           </button>
 
-          <div className="w-[1px] h-4 bg-white/20 my-auto" />
+          <div className="w-[1px] h-4 bg-white/20 mx-0.5 my-auto" />
 
           {/* Toggle Floating 3D Queue */}
           {onToggleQueue && (
@@ -152,7 +152,7 @@ export const TopBar: React.FC<Props> = ({
                 playP5Sound('toggle');
                 onToggleQueue();
               }}
-              className={`px-2 py-1 text-xs font-mono font-bold tracking-wider flex items-center gap-1 transition-all cursor-pointer border ${
+              className={`px-2.5 py-1 text-xs font-mono font-bold tracking-wider flex items-center gap-1.5 transition-all cursor-pointer border ${
                 isQueueExpanded
                   ? 'text-white border-cyan-400 bg-cyan-400/20 shadow-[0_0_12px_rgba(0,255,255,0.35)]'
                   : 'text-white/60 border-white/10 hover:text-white hover:bg-white/10'
@@ -164,7 +164,7 @@ export const TopBar: React.FC<Props> = ({
             </button>
           )}
 
-          <div className="w-[1px] h-4 bg-white/20 my-auto" />
+          <div className="w-[1px] h-4 bg-white/20 mx-0.5 my-auto" />
 
           {/* Add Single File / Local Audio Scan */}
           <button
@@ -172,7 +172,7 @@ export const TopBar: React.FC<Props> = ({
               playP5Sound('click');
               fileInputRef.current?.click();
             }}
-            className="px-2 py-1 text-xs font-mono font-bold tracking-wider text-white/90 hover:text-white hover:bg-white/10 flex items-center gap-1 transition-colors cursor-pointer"
+            className="px-2.5 py-1 text-xs font-mono font-bold tracking-wider text-white/90 hover:text-white hover:bg-white/10 flex items-center gap-1.5 transition-colors cursor-pointer"
             title="Import Audio Files from Phone or PC"
           >
             <FilePlus className="w-3.5 h-3.5" style={{ color: currentTheme.accent }} />
@@ -185,14 +185,14 @@ export const TopBar: React.FC<Props> = ({
               playP5Sound('click');
               folderInputRef.current?.click();
             }}
-            className="hidden sm:flex px-2 py-1 text-xs font-mono font-bold tracking-wider text-white/90 hover:text-white hover:bg-white/10 items-center gap-1 transition-colors cursor-pointer"
+            className="hidden sm:flex px-2.5 py-1 text-xs font-mono font-bold tracking-wider text-white/90 hover:text-white hover:bg-white/10 items-center gap-1.5 transition-colors cursor-pointer"
             title="Scan Entire Music Directory"
           >
             <FolderOpen className="w-3.5 h-3.5 text-[#ffd700]" />
             <span>SCAN</span>
           </button>
 
-          <div className="w-[1px] h-4 bg-white/20 my-auto" />
+          <div className="w-[1px] h-4 bg-white/20 mx-0.5 my-auto" />
 
           {/* Sound FX Toggle */}
           <button
