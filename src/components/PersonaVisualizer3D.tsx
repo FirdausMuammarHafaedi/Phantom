@@ -162,16 +162,16 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     subLight.position.set(15, -10, 15);
     scene.add(subLight);
 
-    // Dedicated HOVER LIGHT: subtle, elegant rim illumination that glows gently on hover
-    const hoverLight = new THREE.PointLight(currentTheme.threeLight, 0, 40);
-    hoverLight.position.set(0, 0, 14);
-    scene.add(hoverLight);
-
     // Root Group for 3D tilt, rotation & movement
     const stageGroup = new THREE.Group();
 
     // Reusable 4x4 matrix for synchronous 3D rigid orientation binding
     const rotMatrix = new THREE.Matrix4();
+
+    // Dedicated HOVER LIGHT: dynamic spotlight inside stageGroup illuminating elevated particles right beneath cursor
+    const hoverLight = new THREE.PointLight(currentTheme.threeLight, 0, 24);
+    hoverLight.position.set(0, 0, 4);
+    stageGroup.add(hoverLight);
 
     // Determine base offset and scale based on viewport width and height (Android mobile responsive)
     const updateStageLayout = (w: number, h: number) => {
@@ -257,15 +257,15 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       }
     };
 
-    // Helper to create round, glowing particle sprite texture for the album cover
+    // Helper to create round, glowing particle sprite texture with ultra-smooth falloff
     const pointCanvas = document.createElement('canvas');
     pointCanvas.width = 64;
     pointCanvas.height = 64;
     const ptCtx = pointCanvas.getContext('2d')!;
     const ptGrad = ptCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
     ptGrad.addColorStop(0, 'rgba(255, 255, 255, 1)');
-    ptGrad.addColorStop(0.35, 'rgba(255, 255, 255, 0.95)');
-    ptGrad.addColorStop(0.75, 'rgba(255, 255, 255, 0.45)');
+    ptGrad.addColorStop(0.3, 'rgba(255, 255, 255, 0.92)');
+    ptGrad.addColorStop(0.65, 'rgba(255, 255, 255, 0.38)');
     ptGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ptCtx.fillStyle = ptGrad;
     ptCtx.fillRect(0, 0, 64, 64);
@@ -275,8 +275,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const particlesGroup = new THREE.Group();
     const canvasSpan = 22; // Covers the whole visualizer canvas area
 
-    // Dense 96x96 particle matrix (9,216 particles) recreating the complete album artwork in points
-    const gridSize = 96;
+    // Dense 144x144 particle matrix (20,736 particles) for tight, silky-smooth, high-fidelity artwork
+    const gridSize = 144;
     const numParticles = gridSize * gridSize;
     const pPositions = new Float32Array(numParticles * 3);
     const basePPositions = new Float32Array(numParticles * 3);
@@ -308,7 +308,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     pGeometry.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
 
     const pMaterial = new THREE.PointsMaterial({
-      size: 0.30,
+      size: 0.20,
       map: pointTexture,
       vertexColors: true,
       transparent: true,
@@ -454,6 +454,20 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     let smoothMids = 0;
     let smoothHighs = 0;
 
+    // 3D Raycasting & Particle Elevation State
+    const raycaster = new THREE.Raycaster();
+    const mouseNDC = new THREE.Vector2();
+    const planeIntersectPoint = new THREE.Vector3();
+    const localIntersectPoint = new THREE.Vector3();
+    const visualizerPlane = new THREE.Plane();
+    const planeNormal = new THREE.Vector3();
+    const toCameraVec = new THREE.Vector3();
+
+    let smoothHoverX = 0;
+    let smoothHoverY = 0;
+    let smoothHoverStrength = 0;
+    let smoothHoverZSign = 1.0;
+
     const render = () => {
       animationFrameId = requestAnimationFrame(render);
 
@@ -479,7 +493,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       const idleHoverY = Math.sin(elapsed * 0.8) * 0.22;
 
       // Interactive hover tilt & elevation: gentle spring easing
-      const isCurrentlyHovered = isHoveredRef.current;
+      const isCurrentlyHovered = isHoveredRef.current && mouseHoverRef.current.isHovered;
       const targetHoverTiltX = isCurrentlyHovered ? -mouseHoverRef.current.y * 0.16 : 0;
       const targetHoverTiltY = isCurrentlyHovered ? mouseHoverRef.current.x * 0.18 : 0;
       const targetHoverElevation = isCurrentlyHovered ? 1.4 : 0;
@@ -488,14 +502,14 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       currHoverTiltRef.current.y += (targetHoverTiltY - currHoverTiltRef.current.y) * 0.05;
       currHoverElevationRef.current += (targetHoverElevation - currHoverElevationRef.current) * 0.05;
 
-      // Soft Persona 5 theme light intensity on hover (max 2.0, subtle and classy)
-      const targetGlow = isCurrentlyHovered ? 2.0 : 0.0;
-      currWhiteLightRef.current += (targetGlow - currWhiteLightRef.current) * 0.07;
+      // Soft Persona 5 theme light intensity on hover (max 2.4, illuminates the raised particles)
+      const targetGlow = isCurrentlyHovered ? 2.4 : 0.0;
+      currWhiteLightRef.current += (targetGlow - currWhiteLightRef.current) * 0.08;
       hoverLight.intensity = currWhiteLightRef.current;
 
       // Gentle starlight halo spin & opacity
       haloMesh.rotation.z += 0.004 + smoothBass * 0.01;
-      haloMat.opacity = (currWhiteLightRef.current / 2.0) * 0.75;
+      haloMat.opacity = (currWhiteLightRef.current / 2.4) * 0.75;
 
       // Chill beat breathing for the whole visualizer stage
       const beatScale = 1.0 + smoothBass * 0.035 * playWeight;
@@ -515,6 +529,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       stageGroup.rotation.x = baseRotX + currHoverTiltRef.current.x;
       stageGroup.rotation.y = baseRotY + autoRotY + currHoverTiltRef.current.y;
       stageGroup.rotation.z = 0;
+      stageGroup.updateMatrixWorld();
 
       // Optical Camera Zoom: smoothly lerp camera Z based on zoomRef
       const targetCameraZ = 32 / (zoomRef.current || 1.0);
@@ -523,6 +538,50 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       // Current 3D optical zoom factor relative to default camera distance (32)
       const currentZoom = 32 / (camera.position.z || 32);
       const compositeScale = currentZoom * beatScale;
+
+      // =========================================================================
+      // DYNAMIC 3D MOUSE RAYCASTING: Find exact local coordinates on the visualizer
+      // =========================================================================
+      let hasIntersect = false;
+      if (isCurrentlyHovered) {
+        mouseNDC.set(mouseHoverRef.current.x, mouseHoverRef.current.y);
+        raycaster.setFromCamera(mouseNDC, camera);
+
+        // Visualizer plane in world space (stageGroup's local Z=0 plane)
+        planeNormal.set(0, 0, 1).applyQuaternion(stageGroup.quaternion).normalize();
+        visualizerPlane.setFromNormalAndCoplanarPoint(planeNormal, stageGroup.position);
+
+        const hit = raycaster.ray.intersectPlane(visualizerPlane, planeIntersectPoint);
+        if (hit) {
+          localIntersectPoint.copy(planeIntersectPoint);
+          stageGroup.worldToLocal(localIntersectPoint);
+
+          // Check if cursor is over or near the visualizer surface (canvasSpan = 22, half = 11)
+          if (Math.abs(localIntersectPoint.x) <= 13.5 && Math.abs(localIntersectPoint.y) <= 13.5) {
+            hasIntersect = true;
+          }
+        }
+      }
+
+      // Determine if viewer/cursor is looking at the front (+Z) or back (-Z) of the visualizer
+      toCameraVec.subVectors(camera.position, stageGroup.position).normalize();
+      const frontDot = planeNormal.dot(toCameraVec);
+      const targetZSign = frontDot >= 0 ? 1.0 : -1.0;
+      smoothHoverZSign += (targetZSign - smoothHoverZSign) * 0.14;
+
+      // Smooth spring interpolation for fluid, silky particle lifting response
+      if (hasIntersect) {
+        smoothHoverX += (localIntersectPoint.x - smoothHoverX) * 0.14;
+        smoothHoverY += (localIntersectPoint.y - smoothHoverY) * 0.14;
+        smoothHoverStrength += (1.0 - smoothHoverStrength) * 0.10;
+      } else {
+        smoothHoverStrength += (0.0 - smoothHoverStrength) * 0.06;
+      }
+
+      // Position subtle hover illumination directly above the lifted particle apex (front or back side)
+      if (smoothHoverStrength > 0.01) {
+        hoverLight.position.set(smoothHoverX, smoothHoverY, 4.0 * (smoothHoverZSign >= 0 ? 1 : -1));
+      }
 
       // Synchronize CSS 3D Floating Stage (Lyrics, 3D Queue stack) with exact WebGL camera, position & zoom
       const currentH = containerRef.current ? containerRef.current.clientHeight : 800;
@@ -585,8 +644,12 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       // Visualizer animations: Whole canvas reacts with audio-reactive particle displacement
       if (mode === 'particles' && particlesMesh) {
         const positions = particlesMesh.geometry.attributes.position.array as Float32Array;
-        // Dynamically scale particle point size with zoom and bass for clarity
-        pMaterial.size = (0.28 + smoothBass * 0.08) * Math.max(0.65, Math.min(1.4, zoomRef.current));
+        // Dynamically scale particle point size with zoom and bass for tight, silky clarity
+        pMaterial.size = (0.19 + smoothBass * 0.05) * Math.max(0.65, Math.min(1.4, zoomRef.current));
+
+        // Area of influence for hover elevation around the mouse cursor
+        const hoverRadius = 5.8;
+        const hoverRadiusSq = hoverRadius * hoverRadius;
 
         for (let i = 0; i < numParticles; i++) {
           const baseX = basePPositions[i * 3];
@@ -594,11 +657,12 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           const dist = Math.sqrt(baseX * baseX + baseY * baseY);
           const normDist = Math.min(1.0, dist / half);
 
+          let zDisplacement = 0;
+          let xyPush = 0;
+
           if (playWeight === 0) {
             // Idle state: particles rest in the exact form of the album cover with subtle holographic breath
-            positions[i * 3] = baseX;
-            positions[i * 3 + 1] = baseY;
-            positions[i * 3 + 2] = Math.sin(dist * 0.28 + elapsed * 0.8) * 0.1;
+            zDisplacement = Math.sin(dist * 0.28 + elapsed * 0.8) * 0.1;
           } else {
             // Audio frequency band for this particle based on radial distance
             const freqIdx = Math.min(63, Math.floor(normDist * 54));
@@ -611,29 +675,82 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
             const bassPunch = Math.max(0, 1.0 - normDist * 0.85) * smoothBass * 2.8;
 
             // Z displacement lifting particles into 3D space
-            const zDisplacement = (wave * 0.65 + freqAmp * 2.0 + bassPunch) * playWeight;
+            zDisplacement = (wave * 0.65 + freqAmp * 2.0 + bassPunch) * playWeight;
 
             // Subtle dynamic fluid breathing dispersion on beats
-            const xyPush = Math.sin(elapsed * 1.8 + dist * 0.8) * smoothBass * 0.1 * playWeight;
-            positions[i * 3] = baseX + (baseX / (dist + 0.1)) * xyPush;
-            positions[i * 3 + 1] = baseY + (baseY / (dist + 0.1)) * xyPush;
-            positions[i * 3 + 2] = zDisplacement;
+            xyPush = Math.sin(elapsed * 1.8 + dist * 0.8) * smoothBass * 0.1 * playWeight;
           }
+
+          // Dynamic hover elevation: particles lift up in 3D right where the mouse cursor hovers!
+          let hoverLiftZ = 0;
+          let hoverPushX = 0;
+          let hoverPushY = 0;
+
+          if (smoothHoverStrength > 0.001) {
+            const mdx = baseX - smoothHoverX;
+            const mdy = baseY - smoothHoverY;
+            const mDistSq = mdx * mdx + mdy * mdy;
+
+            if (mDistSq < hoverRadiusSq) {
+              const mDist = Math.sqrt(mDistSq);
+              // Ultra-smoothstep bell curve (C2 continuous) for seamless transition without sharp edges
+              const t = 1.0 - mDist / hoverRadius;
+              const smoothT = t * t * (3.0 - 2.0 * t);
+              const bellPeak = smoothT * smoothT;
+
+              // Silky, gentle undulating breath lift (lowered height: ~1.65 max stretch, tight and refined)
+              const gentleLift = Math.sin(elapsed * 2.8 + mDist * 1.6) * 0.08 * bellPeak;
+              const baseLift = (bellPeak * 1.65 + gentleLift) * smoothHoverStrength;
+              
+              // Stretches outward toward cursor: forward (+Z) if in front, backward (-Z) if cursor is behind
+              hoverLiftZ = baseLift * smoothHoverZSign;
+
+              // Soft radial displacement pushing gently outward
+              const repel = smoothT * 0.14 * smoothHoverStrength;
+              hoverPushX = (mdx / (mDist + 0.08)) * repel;
+              hoverPushY = (mdy / (mDist + 0.08)) * repel;
+            }
+          }
+
+          const radDirX = dist > 0.01 ? baseX / dist : 0;
+          const radDirY = dist > 0.01 ? baseY / dist : 0;
+
+          positions[i * 3] = baseX + radDirX * xyPush + hoverPushX;
+          positions[i * 3 + 1] = baseY + radDirY * xyPush + hoverPushY;
+          positions[i * 3 + 2] = zDisplacement + hoverLiftZ;
         }
         particlesMesh.geometry.attributes.position.needsUpdate = true;
       } else if (mode === 'clothWave' && clothMesh) {
         const positions = clothMesh.geometry.attributes.position.array as Float32Array;
         const count = positions.length / 3;
+        const hoverRadius = 6.0;
+        const hoverRadiusSq = hoverRadius * hoverRadius;
+
         for (let i = 0; i < count; i++) {
+          const u = positions[i * 3];
+          const v = positions[i * 3 + 1];
+          const dist = Math.sqrt(u * u + v * v);
+          let waveZ = 0;
+
           if (playWeight === 0) {
-            positions[i * 3 + 2] = Math.sin(positions[i * 3] * 0.25 + elapsed * 0.8) * 0.15;
+            waveZ = Math.sin(u * 0.25 + elapsed * 0.8) * 0.15;
           } else {
-            const u = positions[i * 3];
-            const v = positions[i * 3 + 1];
-            const dist = Math.sqrt(u * u + v * v);
-            const waveZ = Math.sin(dist * 0.45 - elapsed * 1.1) * (0.6 + smoothMids * 1.2) * playWeight;
-            positions[i * 3 + 2] = waveZ;
+            waveZ = Math.sin(dist * 0.45 - elapsed * 1.1) * (0.6 + smoothMids * 1.2) * playWeight;
           }
+
+          let hoverLiftZ = 0;
+          if (smoothHoverStrength > 0.001) {
+            const mdx = u - smoothHoverX;
+            const mdy = v - smoothHoverY;
+            const mDistSq = mdx * mdx + mdy * mdy;
+            if (mDistSq < hoverRadiusSq) {
+              const mDist = Math.sqrt(mDistSq);
+              const bell = Math.cos((mDist / hoverRadius) * Math.PI * 0.5);
+              hoverLiftZ = bell * bell * 1.45 * smoothHoverStrength * smoothHoverZSign;
+            }
+          }
+
+          positions[i * 3 + 2] = waveZ + hoverLiftZ;
         }
         clothMesh.geometry.attributes.position.needsUpdate = true;
       } else if (mode === 'p5Vinyl' && vinylGroup) {
@@ -641,11 +758,27 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           vinylGroup.rotation.z -= (0.015 + smoothMids * 0.015) * playWeight;
           if (shardsGroup) shardsGroup.rotation.z += (0.008 + smoothHighs * 0.01) * playWeight;
         }
+        if (shardsGroup && smoothHoverStrength > 0.001) {
+          shardsGroup.children.forEach((shard) => {
+            const sDist = Math.hypot(shard.position.x - smoothHoverX, shard.position.y - smoothHoverY);
+            if (sDist < 5.0) {
+              shard.position.z += (5.0 - sDist) * 0.05 * smoothHoverStrength * smoothHoverZSign;
+              shard.rotation.x += 0.02;
+              shard.rotation.y += 0.02;
+            }
+          });
+        }
       } else if (mode === 'spectrum3D' && spectrumBarsGroup) {
         for (let b = 0; b < barCount; b++) {
           const val = (freq[b * 2] || 0) / 255;
           const bar = barMeshes[b];
-          const targetH = Math.max(0.08, val * 4.5 * playWeight);
+          let targetH = Math.max(0.08, val * 4.5 * playWeight);
+          if (smoothHoverStrength > 0.001) {
+            const bDist = Math.hypot(bar.position.x - smoothHoverX, bar.position.y - smoothHoverY);
+            if (bDist < 6.0) {
+              targetH += (6.0 - bDist) * 0.45 * smoothHoverStrength;
+            }
+          }
           bar.scale.y += (targetH - bar.scale.y) * 0.15;
         }
       }
@@ -1139,7 +1272,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       {isHovered && (
         <div className="absolute top-20 left-4 sm:left-6 z-20 pointer-events-none animate-pulse flex items-center gap-1.5 p5-sfx-sticker px-2.5 py-1 bg-white text-black font-mono text-[9px] font-black tracking-widest border border-black shadow-[2px_2px_0px_#000]">
           <Sparkles className="w-3 h-3 text-[#e60012]" />
-          <span>★ 3D FOCUS // WHITE HOVER ILLUMINATION</span>
+          <span>★ 3D FOCUS // DYNAMIC PARTICLE ELEVATION</span>
         </div>
       )}
 
