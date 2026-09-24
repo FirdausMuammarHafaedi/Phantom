@@ -532,12 +532,15 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       const pixelZ = stageGroup.position.z * pixelsPerUnit * currentZoom;
 
       if (floatingStageRef.current) {
+        // Synchronized 3D rigid attachment:
+        // CSS transforms evaluate right-to-left, so rotateX is applied first, then rotateY, matching Three.js 'XYZ' order.
+        // Sign of rotateX is inverted (-degX) to map Three.js +Y (up) to CSS -Y (up).
         floatingStageRef.current.style.transform = `
           translate3d(${pixelX}px, ${pixelY}px, ${pixelZ}px)
           scale3d(${compositeScale}, ${compositeScale}, ${compositeScale})
-          rotateX(${degX}deg)
           rotateY(${degY}deg)
-          rotateZ(${degZ}deg)
+          rotateX(${-degX}deg)
+          rotateZ(${-degZ}deg)
         `;
       }
 
@@ -663,8 +666,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
   // Pointer drag to orbit, multi-touch pinch to zoom, OR right-click / shift-drag to move
   const handlePointerDown = (e: React.PointerEvent) => {
-    // If clicking on controls, don't drag
-    if ((e.target as HTMLElement).closest('button, input, a, .pointer-events-auto')) return;
+    // If clicking on controls, scrollbar or audio sliders, don't drag
+    if ((e.target as HTMLElement).closest('button, input, a, .overflow-y-auto, .p5-no-drag')) return;
 
     activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -736,16 +739,12 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     }
 
     if (isDraggingRef.current) {
-      // Clean orbit rotation
+      // 360-degree free orbit rotation in all directions (pitch and yaw without artificial angle limits)
       rotationRef.current = {
-        x: Math.max(-0.9, Math.min(0.9, dragStartRef.current.rotX + deltaY * 0.005)),
-        y: dragStartRef.current.rotY + deltaX * 0.005,
+        x: dragStartRef.current.rotX + deltaY * 0.007,
+        y: dragStartRef.current.rotY + deltaX * 0.007,
       };
-      // Subtle physical drag nudge
-      stagePosRef.current = {
-        x: dragStartRef.current.posX + deltaX * 0.0015,
-        y: dragStartRef.current.posY - deltaY * 0.0015,
-      };
+      // Keep center of rotation strictly fixed on the visualizer center
     } else if (isPanningRef.current) {
       // Pan/Move in 3D
       stagePosRef.current = {
@@ -886,6 +885,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                     'polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px))',
                   boxShadow: `6px 6px 0px ${currentTheme.accent}, 10px 10px 0px #000`,
                   transform: 'translateZ(20px)',
+                  transformStyle: 'preserve-3d',
                 }}
               >
                 {/* Comic Speech Bubble Tail pointing straight down to visualizer */}
@@ -907,11 +907,11 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           {/* ============================================================== */}
           {/* 2. 3D FLOATING QUEUE ON THE RIGHT:                            */}
           {/*    Directly referencing Video 181654:                        */}
+          {/*    - Attached rigidly to the visualizer in 3D space           */}
           {/*    - Faces the same direction as the visualizer               */}
           {/*    - Placed neatly to the right of the visualizer (desktop)   */}
           {/*    - Or docked gracefully below visualizer on mobile Android  */}
-          {/*    - Vertical stack of cards with selected card popping out   */}
-          {/*    - Clean depth stacking in 3D without rotated distortion    */}
+          {/*    - Revolves 360° in all directions with the visualizer      */}
           {/* ============================================================== */}
           {tracks.length > 0 && (
             <div
@@ -930,16 +930,23 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                 width: isMobile ? '92vw' : undefined,
                 maxWidth: isMobile ? '360px' : undefined,
               }}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                // If interacting with scrollable playlist or buttons, stop propagation;
+                // otherwise allow dragging on header/frame to rotate the 3D rig!
+                if ((e.target as HTMLElement).closest('.overflow-y-auto, button, input')) {
+                  e.stopPropagation();
+                }
+              }}
             >
               {/* Persona 5 3D Card Stack Container (Video 181654 reference style) */}
               <div
-                className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black"
+                className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black relative"
                 style={{
                   clipPath:
                     'polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px))',
                   boxShadow: `6px 6px 0px ${currentTheme.accent}, 11px 11px 0px #000`,
                   transform: 'translateZ(10px)',
+                  transformStyle: 'preserve-3d',
                 }}
               >
                 {/* 3D Queue Header */}
@@ -1258,7 +1265,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           style={{ boxShadow: `2px 2px 0px ${currentTheme.accent}` }}
         >
           <Eye className="w-3 h-3 text-[#ffd700]" />
-          <span>DRAG 3D ORBIT // SHIFT+DRAG MOVE // WHEEL / PINCH ZOOM // HOVER GLOW</span>
+          <span>DRAG 360° ALL-DIRECTION ORBIT // WHEEL / PINCH ZOOM // SHIFT+DRAG MOVE</span>
         </div>
       </div>
     </div>
