@@ -47,6 +47,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const perspectiveContainerRef = useRef<HTMLDivElement>(null);
   const floatingStageRef = useRef<HTMLDivElement>(null);
   const auraRef = useRef<HTMLDivElement>(null);
 
@@ -169,6 +170,9 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     // Root Group for 3D tilt, rotation & movement
     const stageGroup = new THREE.Group();
 
+    // Reusable 4x4 matrix for synchronous 3D rigid orientation binding
+    const rotMatrix = new THREE.Matrix4();
+
     // Determine base offset and scale based on viewport width and height (Android mobile responsive)
     const updateStageLayout = (w: number, h: number) => {
       const isDesktop = w >= 1024;
@@ -183,10 +187,10 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         ? 0.85
         : Math.max(0.54, Math.min(0.72, (w / 440) * 0.65));
       stageGroup.scale.set(visualizerScale, visualizerScale, visualizerScale);
-      return { baseOffsetX, baseOffsetY };
+      return { baseOffsetX, baseOffsetY, visualizerScale };
     };
 
-    let { baseOffsetX, baseOffsetY } = updateStageLayout(width, height);
+    let { baseOffsetX, baseOffsetY, visualizerScale } = updateStageLayout(width, height);
     stageGroup.position.x = baseOffsetX + stagePosRef.current.x;
     stageGroup.position.y = baseOffsetY + stagePosRef.current.y;
     scene.add(stageGroup);
@@ -495,7 +499,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
       // Chill beat breathing for the whole visualizer stage
       const beatScale = 1.0 + smoothBass * 0.035 * playWeight;
-      stageGroup.scale.set(beatScale, beatScale, beatScale);
+      const currentScale = visualizerScale * beatScale;
+      stageGroup.scale.set(currentScale, currentScale, currentScale);
 
       // Stage position combining base offset, manual pan/move, and idle levitation
       stageGroup.position.x = baseOffsetX + stagePosRef.current.x;
@@ -521,27 +526,51 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
       // Synchronize CSS 3D Floating Stage (Lyrics, 3D Queue stack) with exact WebGL camera, position & zoom
       const currentH = containerRef.current ? containerRef.current.clientHeight : 800;
-      const pixelsPerUnit = currentH / 26.51;
+      const halfFovRad = (45 * Math.PI) / 360;
+      const perspectivePx = (currentH / 2) / Math.tan(halfFovRad);
+      const pixelsPerUnit = (currentH / 2) / (Math.tan(halfFovRad) * 32);
 
-      const degX = (stageGroup.rotation.x * 180) / Math.PI;
-      const degY = (stageGroup.rotation.y * 180) / Math.PI;
-      const degZ = (stageGroup.rotation.z * 180) / Math.PI;
+      if (perspectiveContainerRef.current) {
+        perspectiveContainerRef.current.style.perspective = `${perspectivePx.toFixed(1)}px`;
+      }
+
       // Screen projection coordinates scale precisely with camera optical zoom
       const pixelX = stageGroup.position.x * pixelsPerUnit * currentZoom;
       const pixelY = -stageGroup.position.y * pixelsPerUnit * currentZoom;
       const pixelZ = stageGroup.position.z * pixelsPerUnit * currentZoom;
 
+      // Compute exact 3D orientation matrix directly from Three.js stageGroup
+      rotMatrix.makeRotationFromEuler(stageGroup.rotation);
+      const el = rotMatrix.elements;
+
+      // Matrix columns scaled by compositeScale:
+      // Note: CSS Y-axis points DOWN while Three.js points UP.
+      // Applying change of basis C * R * C negates row 1 and col 1 (indices 1, 4, 6, 9)
+      const s = compositeScale;
+      const r00 = (el[0] * s).toFixed(6);
+      const r01 = (-el[1] * s).toFixed(6);
+      const r02 = (el[2] * s).toFixed(6);
+
+      const r10 = (-el[4] * s).toFixed(6);
+      const r11 = (el[5] * s).toFixed(6);
+      const r12 = (-el[6] * s).toFixed(6);
+
+      const r20 = (el[8] * s).toFixed(6);
+      const r21 = (-el[9] * s).toFixed(6);
+      const r22 = (el[10] * s).toFixed(6);
+
+      const tx = pixelX.toFixed(2);
+      const ty = pixelY.toFixed(2);
+      const tz = pixelZ.toFixed(2);
+
       if (floatingStageRef.current) {
-        // Synchronized 3D rigid attachment:
-        // CSS transforms evaluate right-to-left, so rotateX is applied first, then rotateY, matching Three.js 'XYZ' order.
-        // Sign of rotateX is inverted (-degX) to map Three.js +Y (up) to CSS -Y (up).
-        floatingStageRef.current.style.transform = `
-          translate3d(${pixelX}px, ${pixelY}px, ${pixelZ}px)
-          scale3d(${compositeScale}, ${compositeScale}, ${compositeScale})
-          rotateY(${degY}deg)
-          rotateX(${-degX}deg)
-          rotateZ(${-degZ}deg)
-        `;
+        // Rigidly lock Lyrics & Queue to the exact same 3D axis and orientation as the visualizer
+        floatingStageRef.current.style.transform = `matrix3d(
+          ${r00}, ${r01}, ${r02}, 0,
+          ${r10}, ${r11}, ${r12}, 0,
+          ${r20}, ${r21}, ${r22}, 0,
+          ${tx}, ${ty}, ${tz}, 1
+        )`;
       }
 
       // Update soft theme aura flare to follow visualizer position and zoom
@@ -833,11 +862,12 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
       {/* 3D SYNCHRONIZED LAYER:
           All elements (Visualizer, Lyrics, and Queue Column) face the SAME direction (Front),
-          following the 3D stage synchronously without discordant opposing angles! */}
+          following the 3D stage synchronously locked on the exact same 3D axis! */}
       <div
+        ref={perspectiveContainerRef}
         className="absolute inset-0 pointer-events-none"
         style={{
-          perspective: '1300px',
+          perspective: '1000px',
           perspectiveOrigin: '50% 50%',
           transformStyle: 'preserve-3d',
         }}
@@ -853,11 +883,11 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         >
           {/* ============================================================== */}
           {/* 1. 3D FLOATING LYRICS UI: Clean front-facing Persona dialogue  */}
-          {/*    anchored directly over the visualizer and aligned with it  */}
+          {/*    anchored directly over the visualizer on the same 3D axis   */}
           {/* ============================================================== */}
           {showLyrics && activeLyric && (
             <div
-              className="absolute pointer-events-none flex flex-col items-center justify-center text-center transition-all duration-300"
+              className="absolute pointer-events-none flex flex-col items-center justify-center text-center transition-opacity duration-300"
               style={{
                 transform: isMobile
                   ? 'translate3d(-50%, -150px, 30px)'
@@ -879,7 +909,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
               {/* 3D Persona 5 Speech Bubble */}
               <div
-                className="relative bg-white text-black px-4 sm:px-6 py-2.5 sm:py-3.5 border-2 sm:border-3 border-black w-full transition-all duration-300"
+                className="relative bg-white text-black px-4 sm:px-6 py-2.5 sm:py-3.5 border-2 sm:border-3 border-black w-full"
                 style={{
                   clipPath:
                     'polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px))',
@@ -906,8 +936,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
           {/* ============================================================== */}
           {/* 2. 3D FLOATING QUEUE ON THE RIGHT:                            */}
-          {/*    Directly referencing Video 181654:                        */}
-          {/*    - Attached rigidly to the visualizer in 3D space           */}
+          {/*    Locked rigidly to the visualizer on the exact same 3D axis */}
           {/*    - Faces the same direction as the visualizer               */}
           {/*    - Placed neatly to the right of the visualizer (desktop)   */}
           {/*    - Or docked gracefully below visualizer on mobile Android  */}
@@ -915,10 +944,10 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
           {/* ============================================================== */}
           {tracks.length > 0 && (
             <div
-              className={`absolute transition-all duration-300 ${
+              className={`absolute transition-opacity duration-300 ${
                 isQueueExpanded
-                  ? 'opacity-100 scale-100 pointer-events-auto'
-                  : 'opacity-0 scale-95 pointer-events-none'
+                  ? 'opacity-100 pointer-events-auto'
+                  : 'opacity-0 pointer-events-none'
               }`}
               style={{
                 // Responsive Android placement: Centered below visualizer (+60px) on mobile;
@@ -1105,25 +1134,6 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Floating Queue Re-Open Button if collapsed */}
-      {!isQueueExpanded && tracks.length > 0 && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            playP5Sound('click');
-            handleToggleQueueInternal();
-          }}
-          className="absolute right-3 sm:right-4 bottom-24 sm:top-1/2 sm:-translate-y-1/2 z-20 pointer-events-auto p5-badge-cut px-2.5 sm:px-3 py-1.5 sm:py-2 text-[10px] sm:text-xs font-mono font-bold tracking-widest text-white border-2 border-black flex items-center gap-1 sm:gap-1.5 shadow-[3px_3px_0px_#000] cursor-pointer active:scale-95"
-          style={{
-            backgroundColor: currentTheme.accent,
-            color: currentTheme.textOnAccent,
-          }}
-          title="Open Floating 3D Queue"
-        >
-          <Layers className="w-3.5 sm:w-4 h-3.5 sm:h-4" />
-          <span>SHOW QUEUE ({tracks.length})</span>
-        </button>
-      )}
 
       {/* WHITE HOVER STATUS HUD BADGE */}
       {isHovered && (

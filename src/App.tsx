@@ -385,6 +385,7 @@ export default function App() {
         onOpenThemeSelector={() => setIsThemeSelectorOpen(true)}
         onImportFiles={handleImportFiles}
         onToggleQueue={() => setIsQueueExpanded((prev) => !prev)}
+        isQueueExpanded={isQueueExpanded}
         trackCount={tracks.length}
         soundFxEnabled={soundFxEnabled}
         onToggleSoundFx={() => setSoundFxEnabled(!soundFxEnabled)}
