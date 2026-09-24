@@ -1,4 +1,5 @@
-import { Track } from '../types';
+import { Track, LyricLine } from '../types';
+import { parseLrcString } from './lrcParser';
 
 /**
  * Lightweight pure-client-side audio metadata & cover extractor.
@@ -150,6 +151,7 @@ export async function extractId3Metadata(file: File): Promise<{
   album?: string;
   coverUrl?: string;
   coverBlob?: Blob;
+  lyrics?: LyricLine[];
 }> {
   try {
     // 1. Check ID3v2 (MP3, WAV, etc.)
@@ -176,6 +178,7 @@ export async function extractId3Metadata(file: File): Promise<{
       let album: string | undefined;
       let coverUrl: string | undefined;
       let coverBlob: Blob | undefined;
+      let lyrics: LyricLine[] | undefined;
 
       const decoder = new TextDecoder('utf-8');
       const latin1Decoder = new TextDecoder('iso-8859-1');
@@ -225,6 +228,29 @@ export async function extractId3Metadata(file: File): Promise<{
           const enc = view.getUint8(frameDataOffset);
           const raw = new Uint8Array(buffer, frameDataOffset + 1, frameSize - 1);
           album = (enc === 3 || enc === 1 ? decoder : latin1Decoder).decode(raw).replace(/\0/g, '').trim();
+        } else if (frameId === 'USLT' || frameId === 'SYLT') {
+          // Embedded Unsynchronized or Synchronized Lyrics
+          try {
+            const enc = view.getUint8(frameDataOffset);
+            let textOffset = frameDataOffset + 4; // Skip enc (1) and lang (3)
+            // Skip descriptor until null byte
+            while (textOffset < frameDataOffset + frameSize && view.getUint8(textOffset) !== 0) {
+              textOffset++;
+            }
+            textOffset++;
+            if (enc === 1 && textOffset < frameDataOffset + frameSize && view.getUint8(textOffset) === 0) {
+              textOffset++;
+            }
+            if (textOffset < frameDataOffset + frameSize) {
+              const raw = new Uint8Array(buffer, textOffset, frameDataOffset + frameSize - textOffset);
+              const text = (enc === 3 || enc === 1 ? decoder : latin1Decoder).decode(raw).replace(/\0/g, '').trim();
+              if (text) {
+                lyrics = parseLrcString(text);
+              }
+            }
+          } catch {
+            // ignore
+          }
         } else if (frameId === 'APIC') {
           // Embedded Picture
           try {
@@ -257,7 +283,7 @@ export async function extractId3Metadata(file: File): Promise<{
         offset += 10 + frameSize;
       }
 
-      return { title, artist, album, coverUrl, coverBlob };
+      return { title, artist, album, coverUrl, coverBlob, lyrics };
     }
 
     // 2. Check FLAC Header (fLaC)
@@ -356,6 +382,7 @@ export async function parseAudioFile(file: File): Promise<Track> {
     url: objectUrl,
     coverUrl,
     coverBlob: id3.coverBlob,
+    lyrics: id3.lyrics,
     format,
     sampleRate: format === 'FLAC' ? 96000 : 44100,
     bitDepth: format === 'FLAC' ? 24 : 16,

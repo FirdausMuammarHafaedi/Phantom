@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Track, VisualizerMode, ThemeId } from './types';
+import { Track, LyricLine, VisualizerMode, ThemeId } from './types';
 import { INITIAL_DEMO_TRACKS, generateSyntheticSongBlob } from './utils/demoTracks';
 import { parseAudioFile } from './utils/audioMetadata';
 import { globalAudioEngine, EqualizerGains } from './utils/audioEngine';
@@ -16,11 +16,14 @@ import { PlayerControls } from './components/PlayerControls';
 import { EqualizerModal } from './components/EqualizerModal';
 import { ThemeSelector } from './components/ThemeSelector';
 import { TopBar } from './components/TopBar';
+import { LyricsModal } from './components/LyricsModal';
+import { parseLrcString } from './utils/lrcParser';
 import confetti from 'canvas-confetti';
 import { FolderDown } from 'lucide-react';
 import {
   loadStoredTracks,
   saveTracksToStorage,
+  saveTrackToStorage,
   deleteTrackFromStorage,
   updateTrackFavoriteInStorage,
 } from './utils/trackStorage';
@@ -46,6 +49,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isQueueExpanded, setIsQueueExpanded] = useState(true);
+  const [isLyricsModalOpen, setIsLyricsModalOpen] = useState(false);
   const [scanStatus, setScanStatus] = useState<{ isScanning: boolean; current: number; total: number } | null>(null);
 
   const currentTheme = COLOR_THEMES[themeId] || COLOR_THEMES['phantom-red'];
@@ -319,11 +323,42 @@ export default function App() {
     }
   };
 
-  // Import files from input or drop with permanent IndexedDB persistence
+  // Save lyrics to track and persist permanently in IndexedDB
+  const handleSaveLyrics = async (trackId: string, lyrics: LyricLine[]) => {
+    const updated = tracks.map((t) => (t.id === trackId ? { ...t, lyrics } : t));
+    setTracks(updated);
+    if (currentTrack?.id === trackId) {
+      setCurrentTrack((prev) => (prev ? { ...prev, lyrics } : null));
+    }
+    const targetTrack = updated.find((t) => t.id === trackId);
+    if (targetTrack) {
+      await saveTrackToStorage(targetTrack);
+    }
+  };
+
+  // Import files from input or drop with permanent IndexedDB persistence & auto LRC pairing
   const handleImportFiles = async (fileList: FileList) => {
     playP5Sound('slash');
     const totalFiles = fileList.length;
     setScanStatus({ isScanning: true, current: 0, total: totalFiles });
+
+    // 1. Separate LRC files first to auto-match with audio files by filename
+    const lrcMap = new Map<string, LyricLine[]>();
+    for (let i = 0; i < totalFiles; i++) {
+      const file = fileList[i];
+      if (file.name.match(/\.lrc$/i)) {
+        try {
+          const text = await file.text();
+          const baseName = file.name.replace(/\.lrc$/i, '').trim().toLowerCase();
+          const parsed = parseLrcString(text);
+          if (parsed.length > 0) {
+            lrcMap.set(baseName, parsed);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
 
     const newTracks: Track[] = [];
 
@@ -333,6 +368,11 @@ export default function App() {
       if (file.type.startsWith('audio/') || file.name.match(/\.(flac|mp3|wav|ogg|m4a|aac|opus|webm)$/i)) {
         try {
           const parsed = await parseAudioFile(file);
+          // Check if there is an accompanying .lrc file in the same folder / drop
+          const baseName = file.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
+          if (lrcMap.has(baseName)) {
+            parsed.lyrics = lrcMap.get(baseName);
+          }
           newTracks.push(parsed);
         } catch {
           // ignore unreadable file
@@ -468,6 +508,7 @@ export default function App() {
           onSelectTrack={handlePlayTrack}
           isQueueExpanded={isQueueExpanded}
           onToggleQueue={() => setIsQueueExpanded(!isQueueExpanded)}
+          onOpenLyricsModal={() => setIsLyricsModalOpen(true)}
         />
       </main>
 
@@ -529,6 +570,15 @@ export default function App() {
         onSelectTheme={(id) => setThemeId(id)}
         showSpeedlines={showSpeedlines}
         onToggleSpeedlines={() => setShowSpeedlines(!showSpeedlines)}
+      />
+
+      {/* LYRICS IMPORT & SYNCHRONIZER MODAL */}
+      <LyricsModal
+        isOpen={isLyricsModalOpen}
+        onClose={() => setIsLyricsModalOpen(false)}
+        currentTrack={currentTrack}
+        onSaveLyrics={handleSaveLyrics}
+        currentTheme={currentTheme}
       />
 
       {/* DRAG & DROP FULLSCREEN COMIC OVERLAY */}

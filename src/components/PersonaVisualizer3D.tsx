@@ -30,6 +30,7 @@ interface Props {
   onSelectTrack?: (track: Track) => void;
   isQueueExpanded?: boolean;
   onToggleQueue?: () => void;
+  onOpenLyricsModal?: () => void;
 }
 
 export const PersonaVisualizer3D: React.FC<Props> = ({
@@ -44,6 +45,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   onSelectTrack,
   isQueueExpanded: controlledQueueExpanded,
   onToggleQueue,
+  onOpenLyricsModal,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -175,9 +177,9 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const updateStageLayout = (w: number, h: number) => {
       const isDesktop = w >= 1024;
       const isTablet = w >= 768 && w < 1024;
-      // On mobile portrait (e.g. Android phones), center the visualizer horizontally (0)
-      // and lift it vertically (+3.0) to give clean breathing room for controls and queue
-      const baseOffsetX = isDesktop ? -4.5 : isTablet ? -3.4 : 0;
+      // On mobile portrait, center the visualizer horizontally (0) and lift vertically (+2.8).
+      // On desktop, shift left (-5.2) to give generous, elegant breathing room for the queue list on the right.
+      const baseOffsetX = isDesktop ? -5.2 : isTablet ? -3.6 : 0;
       const baseOffsetY = isDesktop ? 0 : isTablet ? 0 : (h > w ? 2.8 : 0);
       const visualizerScale = isDesktop
         ? 1.0
@@ -1005,28 +1007,45 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         >
           {/* ============================================================== */}
           {/* 1. 3D FLOATING LYRICS UI: Clean front-facing Persona dialogue  */}
-          {/*    anchored directly over the visualizer on the same 3D axis   */}
+          {/*    positioned AT THE VERY TOP of the visualizer on 3D axis    */}
           {/* ============================================================== */}
           {showLyrics && activeLyric && (
             <div
               className="absolute pointer-events-none flex flex-col items-center justify-center text-center transition-opacity duration-300"
               style={{
+                // Positioned at the very top of the visualizer (-330px on desktop, -220px on mobile)
                 transform: isMobile
-                  ? 'translate3d(-50%, -150px, 30px)'
-                  : 'translate3d(-50%, -240px, 35px)',
+                  ? 'translate3d(-50%, -220px, 30px)'
+                  : 'translate3d(-50%, -330px, 35px)',
                 transformStyle: 'preserve-3d',
-                width: isMobile ? '88vw' : '460px',
+                width: isMobile ? '88vw' : '480px',
                 maxWidth: '92vw',
               }}
             >
               {/* Top 3D Comic Sticker */}
-              <div
-                className="p5-sfx-sticker px-2.5 sm:px-3 py-0.5 text-[9px] sm:text-[10px] font-mono font-black tracking-widest uppercase mb-1 sm:mb-1.5 bg-[#ffd700] text-black shadow-[2px_2px_0px_#000] sm:shadow-[3px_3px_0px_#000]"
-                style={{
-                  transform: 'translateZ(12px)',
-                }}
-              >
-                ★ ALL-OUT LYRICS // 1MORE!
+              <div className="flex items-center gap-2 mb-1 sm:mb-1.5">
+                <div
+                  className="p5-sfx-sticker px-2.5 sm:px-3 py-0.5 text-[9px] sm:text-[10px] font-mono font-black tracking-widest uppercase bg-[#ffd700] text-black shadow-[2px_2px_0px_#000] sm:shadow-[3px_3px_0px_#000]"
+                  style={{
+                    transform: 'translateZ(12px)',
+                  }}
+                >
+                  ★ ALL-OUT LYRICS // 1MORE!
+                </div>
+
+                {onOpenLyricsModal && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenLyricsModal();
+                    }}
+                    className="pointer-events-auto p5-badge-cut px-2 py-0.5 text-[9px] font-mono font-bold uppercase tracking-wider bg-black text-white border border-white/40 hover:bg-zinc-800 transition-all cursor-pointer shadow-[2px_2px_0px_#000]"
+                    style={{ transform: 'translateZ(15px)' }}
+                    title="Edit or Import LRC Lyrics"
+                  >
+                    ✎ LRC
+                  </button>
+                )}
               </div>
 
               {/* 3D Persona 5 Speech Bubble */}
@@ -1056,12 +1075,42 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
             </div>
           )}
 
+          {/* Prompt when track does not have lyrics yet */}
+          {showLyrics && (!currentTrack?.lyrics || currentTrack.lyrics.length === 0) && (
+            <div
+              className="absolute pointer-events-auto flex flex-col items-center justify-center text-center transition-opacity duration-300"
+              style={{
+                transform: isMobile
+                  ? 'translate3d(-50%, -190px, 30px)'
+                  : 'translate3d(-50%, -290px, 35px)',
+                transformStyle: 'preserve-3d',
+                width: isMobile ? '88vw' : '440px',
+                maxWidth: '92vw',
+              }}
+            >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenLyricsModal?.();
+                }}
+                className="group relative bg-[#090b11]/95 text-white px-4 py-2 border-2 border-black flex items-center gap-2 cursor-pointer shadow-[4px_4px_0px_#000] hover:scale-105 active:scale-95 transition-all"
+                style={{
+                  clipPath: 'polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px))',
+                }}
+              >
+                <div className="w-2.5 h-2.5 rotate-45" style={{ backgroundColor: currentTheme.accent }} />
+                <span className="font-mono text-[10px] sm:text-xs font-bold text-zinc-300 group-hover:text-white">
+                  NO SYNCED LYRICS // <span className="text-[#ffd700] font-black underline">[ + IMPORT .LRC / PASTE ]</span>
+                </span>
+              </button>
+            </div>
+          )}
+
           {/* ============================================================== */}
           {/* 2. 3D FLOATING QUEUE ON THE RIGHT:                            */}
           {/*    Locked rigidly to the visualizer on the exact same 3D axis */}
           {/*    - Faces the same direction as the visualizer               */}
-          {/*    - Placed neatly to the right of the visualizer (desktop)   */}
-          {/*    - Or docked gracefully below visualizer on mobile Android  */}
+          {/*    - Positioned with a distinct generous gap to the right     */}
           {/*    - Revolves 360° in all directions with the visualizer      */}
           {/* ============================================================== */}
           {tracks.length > 0 && (
@@ -1072,11 +1121,10 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                   : 'opacity-0 pointer-events-none'
               }`}
               style={{
-                // Responsive Android placement: Centered below visualizer (+60px) on mobile;
-                // on desktop/tablet, offset cleanly to the right (+280px) exactly as in video 181654
+                // Offset generously to the right (+370px) on desktop to provide clean spacing from visualizer
                 transform: isMobile
                   ? 'translate3d(-50%, 60px, 25px)'
-                  : 'translate3d(280px, -50%, 25px)',
+                  : 'translate3d(370px, -50%, 25px)',
                 transformStyle: 'preserve-3d',
                 width: isMobile ? '92vw' : undefined,
                 maxWidth: isMobile ? '360px' : undefined,
