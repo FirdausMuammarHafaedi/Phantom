@@ -49,7 +49,6 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const perspectiveContainerRef = useRef<HTMLDivElement>(null);
   const floatingStageRef = useRef<HTMLDivElement>(null);
-  const auraRef = useRef<HTMLDivElement>(null);
 
   // Queue expansion state (defaulting to always visible)
   const [internalQueueExpanded, setInternalQueueExpanded] = useState(true);
@@ -134,9 +133,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     let width = containerRef.current.clientWidth;
     let height = containerRef.current.clientHeight;
 
-    // Three.js Scene Setup
+    // Three.js Scene Setup (No darkening fog - pristine clarity and brightness at any distance)
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x07090e, 0.022);
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
     camera.position.set(0, 0, 32);
@@ -168,8 +166,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     // Reusable 4x4 matrix for synchronous 3D rigid orientation binding
     const rotMatrix = new THREE.Matrix4();
 
-    // Dedicated HOVER LIGHT: dynamic spotlight inside stageGroup illuminating elevated particles right beneath cursor
-    const hoverLight = new THREE.PointLight(currentTheme.threeLight, 0, 24);
+    // Dedicated HOVER LIGHT: dynamic neutral white spotlight inside stageGroup illuminating elevated particles right beneath cursor
+    const hoverLight = new THREE.PointLight(0xffffff, 0, 24);
     hoverLight.position.set(0, 0, 4);
     stageGroup.add(hoverLight);
 
@@ -204,30 +202,30 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
     // Load cover image texture using an HTML canvas for 100% reliable rendering in WebGL & Electron
     const coverCanvas = document.createElement('canvas');
-    coverCanvas.width = 512;
-    coverCanvas.height = 512;
+    coverCanvas.width = 1024;
+    coverCanvas.height = 1024;
     const coverCtx = coverCanvas.getContext('2d')!;
 
     // Initial procedural Persona 5 artwork
     coverCtx.fillStyle = '#0c0e15';
-    coverCtx.fillRect(0, 0, 512, 512);
+    coverCtx.fillRect(0, 0, 1024, 1024);
 
     coverCtx.fillStyle = currentTheme.accent;
     coverCtx.beginPath();
-    coverCtx.moveTo(0, 320);
-    coverCtx.lineTo(512, 200);
-    coverCtx.lineTo(512, 360);
-    coverCtx.lineTo(0, 480);
+    coverCtx.moveTo(0, 640);
+    coverCtx.lineTo(1024, 400);
+    coverCtx.lineTo(1024, 720);
+    coverCtx.lineTo(0, 960);
     coverCtx.fill();
 
     coverCtx.fillStyle = '#ffffff';
-    coverCtx.font = '900 34px sans-serif';
+    coverCtx.font = '900 64px sans-serif';
     coverCtx.textAlign = 'center';
-    coverCtx.fillText((currentTrack?.title || 'PHANTOM').substring(0, 18).toUpperCase(), 256, 260);
+    coverCtx.fillText((currentTrack?.title || 'PHANTOM').substring(0, 18).toUpperCase(), 512, 520);
 
     coverCtx.fillStyle = '#ffd700';
-    coverCtx.font = '700 18px monospace';
-    coverCtx.fillText((currentTrack?.artist || 'AUDIO PLAYER').substring(0, 24).toUpperCase(), 256, 300);
+    coverCtx.font = '700 36px monospace';
+    coverCtx.fillText((currentTrack?.artist || 'AUDIO PLAYER').substring(0, 24).toUpperCase(), 512, 600);
 
     const coverTexture = new THREE.CanvasTexture(coverCanvas);
     coverTexture.minFilter = THREE.LinearFilter;
@@ -237,16 +235,18 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     // Helper to sample cover image colors onto particle vertices
     const sampleCoverColors = (targetColors: Float32Array, count: number, size: number) => {
       try {
-        const imgData = coverCtx.getImageData(0, 0, 512, 512).data;
+        const cw = coverCanvas.width;
+        const ch = coverCanvas.height;
+        const imgData = coverCtx.getImageData(0, 0, cw, ch).data;
         for (let ix = 0; ix < size; ix++) {
           for (let iy = 0; iy < size; iy++) {
             const idx = ix * size + iy;
             if (idx >= count) break;
             const u = ix / (size - 1);
             const v = 1 - iy / (size - 1);
-            const px = Math.min(511, Math.max(0, Math.floor(u * 511)));
-            const py = Math.min(511, Math.max(0, Math.floor(v * 511)));
-            const offset = (py * 512 + px) * 4;
+            const px = Math.min(cw - 1, Math.max(0, Math.floor(u * (cw - 1))));
+            const py = Math.min(ch - 1, Math.max(0, Math.floor(v * (ch - 1))));
+            const offset = (py * cw + px) * 4;
             targetColors[idx * 3] = imgData[offset] / 255;
             targetColors[idx * 3 + 1] = imgData[offset + 1] / 255;
             targetColors[idx * 3 + 2] = imgData[offset + 2] / 255;
@@ -264,8 +264,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const ptCtx = pointCanvas.getContext('2d')!;
     const ptGrad = ptCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
     ptGrad.addColorStop(0, 'rgba(255, 255, 255, 1)');
-    ptGrad.addColorStop(0.3, 'rgba(255, 255, 255, 0.92)');
-    ptGrad.addColorStop(0.65, 'rgba(255, 255, 255, 0.38)');
+    ptGrad.addColorStop(0.84, 'rgba(255, 255, 255, 1)');
+    ptGrad.addColorStop(0.98, 'rgba(255, 255, 255, 0.92)');
     ptGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ptCtx.fillStyle = ptGrad;
     ptCtx.fillRect(0, 0, 64, 64);
@@ -275,8 +275,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const particlesGroup = new THREE.Group();
     const canvasSpan = 22; // Covers the whole visualizer canvas area
 
-    // Dense 144x144 particle matrix (20,736 particles) for tight, silky-smooth, high-fidelity artwork
-    const gridSize = 144;
+    // Dense 200x200 particle matrix (40,000 particles) for an ultra-tight, silky-smooth, dense surface
+    const gridSize = 200;
     const numParticles = gridSize * gridSize;
     const pPositions = new Float32Array(numParticles * 3);
     const basePPositions = new Float32Array(numParticles * 3);
@@ -308,32 +308,39 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     pGeometry.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
 
     const pMaterial = new THREE.PointsMaterial({
-      size: 0.20,
+      size: 0.22,
       map: pointTexture,
       vertexColors: true,
       transparent: true,
-      opacity: 0.98,
+      opacity: 1.0,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
+      fog: false,
     });
     particlesMesh = new THREE.Points(pGeometry, pMaterial);
     particlesGroup.add(particlesMesh);
+
+    // Function to apply cover image immediately
+    const applyCoverImage = (img: HTMLImageElement) => {
+      coverCtx.clearRect(0, 0, 1024, 1024);
+      coverCtx.drawImage(img, 0, 0, 1024, 1024);
+      coverTexture.needsUpdate = true;
+      if (particlesMesh) {
+        const colors = particlesMesh.geometry.attributes.color.array as Float32Array;
+        sampleCoverColors(colors, numParticles, gridSize);
+        particlesMesh.geometry.attributes.color.needsUpdate = true;
+      }
+    };
 
     // When cover image loads, refresh texture & particle colors instantly
     if (currentTrack?.coverUrl) {
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        coverCtx.clearRect(0, 0, 512, 512);
-        coverCtx.drawImage(img, 0, 0, 512, 512);
-        coverTexture.needsUpdate = true;
-        if (particlesMesh) {
-          const colors = particlesMesh.geometry.attributes.color.array as Float32Array;
-          sampleCoverColors(colors, numParticles, gridSize);
-          particlesMesh.geometry.attributes.color.needsUpdate = true;
-        }
-      };
+      img.onload = () => applyCoverImage(img);
       img.src = currentTrack.coverUrl;
+      if (img.complete && img.naturalWidth > 0) {
+        applyCoverImage(img);
+      }
     }
 
     // HOVER ENERGY RING: An orbital halo of sparkling star points crowning the outer canvas edge
@@ -632,20 +639,18 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         )`;
       }
 
-      // Update soft theme aura flare to follow visualizer position and zoom
-      if (auraRef.current) {
-        auraRef.current.style.transform = `
-          translate(-50%, -50%)
-          translate3d(${pixelX}px, ${pixelY}px, 0px)
-          scale(${compositeScale * (isHoveredRef.current ? 1.12 : 0.88)})
-        `;
-      }
+      // Dynamic Perspective Clarity:
+      // "ketika perspektif dijauhkan cover semakin jelas bukan menggelap ataupun menghitam"
+      // As perspective camera pulls back / zooms out, points scale to comfortably overlap and form
+      // an impeccably crisp, bright, solid album cover without any raster gaps, dimming, or blackening.
+      const camDistance = camera.position.z;
+      const distRatio = Math.max(0.5, camDistance / 32);
 
-      // Visualizer animations: Whole canvas reacts with audio-reactive particle displacement
+      // Visualizer animations: Whole visualizer surface reacts directly with audio and hover displacement
       if (mode === 'particles' && particlesMesh) {
         const positions = particlesMesh.geometry.attributes.position.array as Float32Array;
-        // Dynamically scale particle point size with zoom and bass for tight, silky clarity
-        pMaterial.size = (0.19 + smoothBass * 0.05) * Math.max(0.65, Math.min(1.4, zoomRef.current));
+        // As perspective distance grows, increase particle size relative to camera distance so particles seamlessly coalesce without subpixel darkness
+        pMaterial.size = (0.22 + smoothBass * 0.035) * Math.pow(distRatio, 0.9);
 
         // Area of influence for hover elevation around the mouse cursor
         const hoverRadius = 5.8;
@@ -976,22 +981,6 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     >
       {/* Dynamic 3D WebGL Canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block pointer-events-none" />
-
-      {/* REFINED HOVER EFFECT: Soft Theme Flare behind the Visualizer */}
-      <div
-        ref={auraRef}
-        className="absolute pointer-events-none transition-opacity duration-700 ease-out"
-        style={{
-          opacity: isHovered ? 0.28 : 0,
-          background: `radial-gradient(circle, ${currentTheme.accent} 0%, rgba(255, 215, 0, 0.18) 35%, transparent 70%)`,
-          width: '680px',
-          height: '680px',
-          left: '50%',
-          top: '50%',
-          filter: 'blur(38px)',
-          willChange: 'transform',
-        }}
-      />
 
       {/* 3D SYNCHRONIZED LAYER:
           All elements (Visualizer, Lyrics, and Queue Column) face the SAME direction (Front),
