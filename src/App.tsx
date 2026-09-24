@@ -18,6 +18,12 @@ import { ThemeSelector } from './components/ThemeSelector';
 import { TopBar } from './components/TopBar';
 import confetti from 'canvas-confetti';
 import { FolderDown } from 'lucide-react';
+import {
+  loadStoredTracks,
+  saveTracksToStorage,
+  deleteTrackFromStorage,
+  updateTrackFavoriteInStorage,
+} from './utils/trackStorage';
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>(INITIAL_DEMO_TRACKS);
@@ -40,6 +46,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isQueueExpanded, setIsQueueExpanded] = useState(true);
+  const [scanStatus, setScanStatus] = useState<{ isScanning: boolean; current: number; total: number } | null>(null);
 
   const currentTheme = COLOR_THEMES[themeId] || COLOR_THEMES['phantom-red'];
 
@@ -68,6 +75,33 @@ export default function App() {
   repeatModeRef.current = repeatMode;
   const isShuffleRef = useRef(isShuffle);
   isShuffleRef.current = isShuffle;
+
+  // Load previously scanned music library from offline IndexedDB storage on startup
+  useEffect(() => {
+    let isMounted = true;
+    loadStoredTracks().then((storedTracks) => {
+      if (!isMounted) return;
+      if (storedTracks.length > 0) {
+        // User has previously scanned or imported songs! Restore them immediately!
+        setTracks(storedTracks);
+        // Restore last played track or default to first stored track
+        const savedLastId = localStorage.getItem('p5_last_track_id');
+        const found = storedTracks.find((t) => t.id === savedLastId) || storedTracks[0];
+        setCurrentTrack(found);
+        setDuration(found.duration);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Save last selected track ID to restore on next launch
+  useEffect(() => {
+    if (currentTrack?.id) {
+      localStorage.setItem('p5_last_track_id', currentTrack.id);
+    }
+  }, [currentTrack]);
 
   // Initialize Synthetic audio for demo tracks if not generated yet
   const ensureTrackPlayable = useCallback((track: Track): Track => {
@@ -243,11 +277,14 @@ export default function App() {
   };
 
   // Favorite toggle with Persona 5 comic burst effect
-  const handleToggleFavorite = (id: string) => {
+  const handleToggleFavorite = async (id: string) => {
+    const target = tracks.find((t) => t.id === id);
+    const nextFav = target ? !target.isFavorite : true;
+    await updateTrackFavoriteInStorage(id, nextFav);
+
     setTracks((prev) =>
       prev.map((t) => {
         if (t.id === id) {
-          const nextFav = !t.isFavorite;
           if (nextFav) {
             confetti({
               particleCount: 35,
@@ -266,8 +303,9 @@ export default function App() {
     }
   };
 
-  // Delete Track from playlist
-  const handleDeleteTrack = (id: string) => {
+  // Delete Track from playlist and remove from IndexedDB storage
+  const handleDeleteTrack = async (id: string) => {
+    await deleteTrackFromStorage(id);
     setTracks((prev) => prev.filter((t) => t.id !== id));
     if (currentTrack?.id === id) {
       const remaining = tracks.filter((t) => t.id !== id);
@@ -281,12 +319,15 @@ export default function App() {
     }
   };
 
-  // Import files from input or drop
+  // Import files from input or drop with permanent IndexedDB persistence
   const handleImportFiles = async (fileList: FileList) => {
     playP5Sound('slash');
+    const totalFiles = fileList.length;
+    setScanStatus({ isScanning: true, current: 0, total: totalFiles });
+
     const newTracks: Track[] = [];
 
-    for (let i = 0; i < fileList.length; i++) {
+    for (let i = 0; i < totalFiles; i++) {
       const file = fileList[i];
       // Check audio mime type or extension
       if (file.type.startsWith('audio/') || file.name.match(/\.(flac|mp3|wav|ogg|m4a|aac|opus|webm)$/i)) {
@@ -297,9 +338,13 @@ export default function App() {
           // ignore unreadable file
         }
       }
+      setScanStatus({ isScanning: true, current: i + 1, total: totalFiles });
     }
 
     if (newTracks.length > 0) {
+      // 1. Immediately persist newly scanned tracks into IndexedDB
+      await saveTracksToStorage(newTracks);
+
       setTracks((prev) => [...newTracks, ...prev]);
       // Immediately play the first newly imported file
       handlePlayTrack(newTracks[0]);
@@ -310,6 +355,8 @@ export default function App() {
         colors: ['#e60012', '#00d2ff', '#ffffff', '#ffd700'],
       });
     }
+
+    setScanStatus(null);
   };
 
   // Drag & Drop handlers on window
@@ -377,6 +424,21 @@ export default function App() {
           className="p5-speedlines absolute inset-0 pointer-events-none transition-opacity duration-500"
           style={{ opacity: isPlaying ? 0.35 : 0.15 }}
         />
+      )}
+
+      {/* SCANNING & SAVING PROGRESS OVERLAY */}
+      {scanStatus && scanStatus.isScanning && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-bounce">
+          <div
+            className="p5-badge-cut px-6 py-3 border-2 border-black flex items-center gap-3 text-white font-display text-sm tracking-wider shadow-[4px_4px_0px_#000]"
+            style={{ backgroundColor: currentTheme.accent, color: currentTheme.textOnAccent }}
+          >
+            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+            <span>
+              SCANNING & SAVING OFFLINE: {scanStatus.current} / {scanStatus.total} TRACKS
+            </span>
+          </div>
+        </div>
       )}
 
       {/* TOP BAR */}

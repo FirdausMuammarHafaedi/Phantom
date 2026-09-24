@@ -149,6 +149,7 @@ export async function extractId3Metadata(file: File): Promise<{
   artist?: string;
   album?: string;
   coverUrl?: string;
+  coverBlob?: Blob;
 }> {
   try {
     // 1. Check ID3v2 (MP3, WAV, etc.)
@@ -174,6 +175,7 @@ export async function extractId3Metadata(file: File): Promise<{
       let artist: string | undefined;
       let album: string | undefined;
       let coverUrl: string | undefined;
+      let coverBlob: Blob | undefined;
 
       const decoder = new TextDecoder('utf-8');
       const latin1Decoder = new TextDecoder('iso-8859-1');
@@ -244,8 +246,8 @@ export async function extractId3Metadata(file: File): Promise<{
             }
             if (imgStart !== -1) {
               const imgBytes = raw.subarray(imgStart);
-              const blob = new Blob([imgBytes], { type: mimeType });
-              coverUrl = URL.createObjectURL(blob);
+              coverBlob = new Blob([imgBytes], { type: mimeType });
+              coverUrl = URL.createObjectURL(coverBlob);
             }
           } catch {
             // ignore error
@@ -255,7 +257,7 @@ export async function extractId3Metadata(file: File): Promise<{
         offset += 10 + frameSize;
       }
 
-      return { title, artist, album, coverUrl };
+      return { title, artist, album, coverUrl, coverBlob };
     }
 
     // 2. Check FLAC Header (fLaC)
@@ -295,8 +297,8 @@ export async function extractId3Metadata(file: File): Promise<{
 
             if (pOffset + dataLen <= flacView.byteLength) {
               const imgBytes = new Uint8Array(flacSlice, pOffset, dataLen);
-              const blob = new Blob([imgBytes], { type: mimeType });
-              return { coverUrl: URL.createObjectURL(blob) };
+              const coverBlob = new Blob([imgBytes], { type: mimeType });
+              return { coverBlob, coverUrl: URL.createObjectURL(coverBlob) };
             }
           } catch {
             // ignore
@@ -353,6 +355,7 @@ export async function parseAudioFile(file: File): Promise<Track> {
     duration,
     url: objectUrl,
     coverUrl,
+    coverBlob: id3.coverBlob,
     format,
     sampleRate: format === 'FLAC' ? 96000 : 44100,
     bitDepth: format === 'FLAC' ? 24 : 16,

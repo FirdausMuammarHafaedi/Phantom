@@ -11,6 +11,7 @@ export interface Track {
   duration: number; // seconds
   url: string; // Object URL or synthetic source
   coverUrl: string;
+  coverBlob?: Blob;
   format: string; // 'FLAC' | 'MP3' | 'WAV' | 'OGG' | 'AAC' | 'M4A' | 'OPUS'
   sampleRate?: number; // e.g. 44100 or 96000
   bitDepth?: number; // e.g. 16 or 24
