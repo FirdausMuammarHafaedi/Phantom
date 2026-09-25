@@ -31,6 +31,7 @@ interface Props {
   isQueueExpanded?: boolean;
   onToggleQueue?: () => void;
   onOpenLyricsModal?: () => void;
+  isFetchingLyrics?: boolean;
 }
 
 export const PersonaVisualizer3D: React.FC<Props> = ({
@@ -46,11 +47,14 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   isQueueExpanded: controlledQueueExpanded,
   onToggleQueue,
   onOpenLyricsModal,
+  isFetchingLyrics = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const perspectiveContainerRef = useRef<HTMLDivElement>(null);
   const floatingStageRef = useRef<HTMLDivElement>(null);
+  const queueStageRef = useRef<HTMLDivElement>(null);
+  const queueCardStackRef = useRef<HTMLDivElement>(null);
 
   // Queue expansion state (defaulting to always visible)
   const [internalQueueExpanded, setInternalQueueExpanded] = useState(true);
@@ -99,6 +103,11 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const stagePosRef = useRef({ x: 0, y: 0 });
   const [hasModifiedView, setHasModifiedView] = useState(false);
 
+  // Inertial momentum / drift refs for both rotation and panning
+  const rotVelRef = useRef({ x: 0, y: 0 });
+  const panVelRef = useRef({ x: 0, y: 0 });
+  const lastPointerSampleRef = useRef({ lastX: 0, lastY: 0, time: 0 });
+
   // 3D Optical Zoom (supports mouse wheel, pinch gesture & on-screen buttons)
   const [zoomLevel, setZoomLevel] = useState(1.0);
   const zoomRef = useRef(1.0);
@@ -113,6 +122,17 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const currHoverTiltRef = useRef({ x: 0, y: 0 });
   const currHoverElevationRef = useRef(0);
   const currWhiteLightRef = useRef(0);
+
+  // Play and auto-rotate refs so render loop can freeze/resume smoothly without tearing down 3D scene
+  const isPlayingRef = useRef(isPlaying);
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  const autoRotateRef = useRef(autoRotate);
+  useEffect(() => {
+    autoRotateRef.current = autoRotate;
+  }, [autoRotate]);
 
   // Current lyric line
   const activeLyric = useMemo(() => {
@@ -167,6 +187,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
     // Reusable 4x4 matrix for synchronous 3D rigid orientation binding
     const rotMatrix = new THREE.Matrix4();
+    const queueRotMatrix = new THREE.Matrix4();
+    const queueRotEuler = new THREE.Euler(0, 0, 0, 'XYZ');
 
     // Dedicated HOVER LIGHT: dynamic neutral white spotlight inside stageGroup illuminating elevated particles right beneath cursor
     const hoverLight = new THREE.PointLight(0xffffff, 0, 24);
@@ -454,14 +476,29 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       stageGroup.add(spectrumBarsGroup);
     }
 
-    // Animation Loop with smooth audio damping for chill visuals
+    // Animation Loop with smooth audio damping & freeze-on-pause
     let animationFrameId: number;
-    const clock = new THREE.Clock();
-    let playWeight = isPlaying ? 1.0 : 0.0;
+    let waveTime = 0;
+    let hoverWaveTime = 0;
+    let currentAutoRotY = 0;
+    let lastTime = performance.now();
 
     let smoothBass = 0;
     let smoothMids = 0;
     let smoothHighs = 0;
+    const frozenFreq = new Float32Array(64);
+    let hasPlayedOnce = isPlaying;
+
+    // Queue List 3D Wave Follow Physics state
+    let isFirstQueueFrame = true;
+    let queuePixelX = 0;
+    let queuePixelY = 0;
+    let queuePixelZ = 0;
+    let queueRotX = 0;
+    let queueRotY = 0;
+    let queueRotZ = 0;
+    let queueScale = 1.0;
+    let queueWavePhase = 0;
 
     // 3D Raycasting & Particle Elevation State
     const raycaster = new THREE.Raycaster();
@@ -480,26 +517,69 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     const render = () => {
       animationFrameId = requestAnimationFrame(render);
 
-      const elapsed = clock.getElapsedTime();
+      const now = performance.now();
+      const delta = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
 
-      // Retrieve audio frequencies with low-pass exponential smoothing for chill visuals
-      const freq = globalAudioEngine.getFrequencyData();
-      const rawBass = (freq[1] + freq[2] + freq[3] + freq[4]) / 4 / 255;
-      const rawMids = (freq[12] + freq[14] + freq[16]) / 3 / 255;
-      const rawHighs = (freq[30] + freq[32] + freq[34]) / 3 / 255;
+      // Always advance hover wave time so interactive cursor ripples stay fluid
+      hoverWaveTime += delta;
 
-      smoothBass += (rawBass - smoothBass) * 0.08;
-      smoothMids += (rawMids - smoothMids) * 0.08;
-      smoothHighs += (rawHighs - smoothHighs) * 0.08;
+      const playing = isPlayingRef.current;
 
-      const targetPlay = isPlaying ? 1.0 : 0.0;
-      playWeight += (targetPlay - playWeight) * 0.06;
-      if (!isPlaying && playWeight < 0.002) {
-        playWeight = 0;
+      if (playing) {
+        hasPlayedOnce = true;
+        waveTime += delta;
+        if (autoRotateRef.current) {
+          currentAutoRotY += delta * 0.2;
+        }
+
+        // Live audio frequencies
+        const freq = globalAudioEngine.getFrequencyData();
+        for (let i = 0; i < 64; i++) {
+          frozenFreq[i] = freq[i] || 0;
+        }
+        const rawBass = (freq[1] + freq[2] + freq[3] + freq[4]) / 4 / 255;
+        const rawMids = (freq[12] + freq[14] + freq[16]) / 3 / 255;
+        const rawHighs = (freq[30] + freq[32] + freq[34]) / 3 / 255;
+
+        smoothBass += (rawBass - smoothBass) * 0.075;
+        smoothMids += (rawMids - smoothMids) * 0.075;
+        smoothHighs += (rawHighs - smoothHighs) * 0.075;
+      }
+      // When paused (!playing):
+      // waveTime stays frozen
+      // currentAutoRotY stays frozen
+      // smoothBass, smoothMids, smoothHighs and frozenFreq remain preserved
+      // Visualizer stays frozen still in its exact displaced position!
+
+      // Inertial drift momentum for Visualizer & Stage (Orbiting & Panning)
+      if (!isDraggingRef.current) {
+        if (Math.abs(rotVelRef.current.x) > 0.00003 || Math.abs(rotVelRef.current.y) > 0.00003) {
+          rotationRef.current.x += rotVelRef.current.x;
+          rotationRef.current.y += rotVelRef.current.y;
+          // Smooth aerodynamic friction decay (gentle, steady deceleration)
+          rotVelRef.current.x *= 0.915;
+          rotVelRef.current.y *= 0.915;
+        } else {
+          rotVelRef.current.x = 0;
+          rotVelRef.current.y = 0;
+        }
       }
 
-      // Chill idle breathing (slow, relaxing sine wave)
-      const idleHoverY = Math.sin(elapsed * 0.8) * 0.22;
+      if (!isPanningRef.current) {
+        if (Math.abs(panVelRef.current.x) > 0.0001 || Math.abs(panVelRef.current.y) > 0.0001) {
+          stagePosRef.current.x += panVelRef.current.x;
+          stagePosRef.current.y += panVelRef.current.y;
+          panVelRef.current.x *= 0.915;
+          panVelRef.current.y *= 0.915;
+        } else {
+          panVelRef.current.x = 0;
+          panVelRef.current.y = 0;
+        }
+      }
+
+      // Chill idle breathing (freezes when paused)
+      const idleHoverY = Math.sin(waveTime * 0.6) * 0.17;
 
       // Interactive hover tilt & elevation: gentle spring easing
       const isCurrentlyHovered = isHoveredRef.current && mouseHoverRef.current.isHovered;
@@ -516,12 +596,14 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       currWhiteLightRef.current += (targetGlow - currWhiteLightRef.current) * 0.08;
       hoverLight.intensity = currWhiteLightRef.current;
 
-      // Gentle starlight halo spin & opacity
-      haloMesh.rotation.z += 0.004 + smoothBass * 0.01;
+      // Gentle starlight halo spin & opacity (freezes when paused)
+      if (playing) {
+        haloMesh.rotation.z += 0.004 + smoothBass * 0.01;
+      }
       haloMat.opacity = (currWhiteLightRef.current / 2.4) * 0.75;
 
-      // Chill beat breathing for the whole visualizer stage
-      const beatScale = 1.0 + smoothBass * 0.035 * playWeight;
+      // Chill beat breathing for the whole visualizer stage (freezes when paused)
+      const beatScale = hasPlayedOnce ? 1.0 + smoothBass * 0.035 : 1.0;
       const currentScale = visualizerScale * beatScale;
       stageGroup.scale.set(currentScale, currentScale, currentScale);
 
@@ -530,13 +612,12 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       stageGroup.position.y = baseOffsetY + idleHoverY + stagePosRef.current.y;
       stageGroup.position.z = currHoverElevationRef.current;
 
-      // Orbit rotation + autoRotate + interactive hover tilt
+      // Orbit rotation + autoRotate + interactive hover tilt (freezes when paused)
       const baseRotX = rotationRef.current.x;
       const baseRotY = rotationRef.current.y;
-      const autoRotY = autoRotate ? elapsed * 0.2 : 0;
 
       stageGroup.rotation.x = baseRotX + currHoverTiltRef.current.x;
-      stageGroup.rotation.y = baseRotY + autoRotY + currHoverTiltRef.current.y;
+      stageGroup.rotation.y = baseRotY + currentAutoRotY + currHoverTiltRef.current.y;
       stageGroup.rotation.z = 0;
       stageGroup.updateMatrixWorld();
 
@@ -580,11 +661,11 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
       // Smooth spring interpolation for fluid, silky particle lifting response
       if (hasIntersect) {
-        smoothHoverX += (localIntersectPoint.x - smoothHoverX) * 0.14;
-        smoothHoverY += (localIntersectPoint.y - smoothHoverY) * 0.14;
-        smoothHoverStrength += (1.0 - smoothHoverStrength) * 0.10;
+        smoothHoverX += (localIntersectPoint.x - smoothHoverX) * 0.09;
+        smoothHoverY += (localIntersectPoint.y - smoothHoverY) * 0.09;
+        smoothHoverStrength += (1.0 - smoothHoverStrength) * 0.07;
       } else {
-        smoothHoverStrength += (0.0 - smoothHoverStrength) * 0.06;
+        smoothHoverStrength += (0.0 - smoothHoverStrength) * 0.05;
       }
 
       // Position subtle hover illumination directly above the lifted particle apex (front or back side)
@@ -611,9 +692,6 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       rotMatrix.makeRotationFromEuler(stageGroup.rotation);
       const el = rotMatrix.elements;
 
-      // Matrix columns scaled by compositeScale:
-      // Note: CSS Y-axis points DOWN while Three.js points UP.
-      // Applying change of basis C * R * C negates row 1 and col 1 (indices 1, 4, 6, 9)
       const s = compositeScale;
       const r00 = (el[0] * s).toFixed(6);
       const r01 = (-el[1] * s).toFixed(6);
@@ -632,7 +710,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       const tz = pixelZ.toFixed(2);
 
       if (floatingStageRef.current) {
-        // Rigidly lock Lyrics & Queue to the exact same 3D axis and orientation as the visualizer
+        // Rigidly lock Lyrics to the exact same 3D axis and orientation as the visualizer
         floatingStageRef.current.style.transform = `matrix3d(
           ${r00}, ${r01}, ${r02}, 0,
           ${r10}, ${r11}, ${r12}, 0,
@@ -641,54 +719,173 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         )`;
       }
 
-      // Dynamic Perspective Clarity:
-      // "ketika perspektif dijauhkan cover semakin jelas bukan menggelap ataupun menghitam"
-      // As perspective camera pulls back / zooms out, points scale to comfortably overlap and form
-      // an impeccably crisp, bright, solid album cover without any raster gaps, dimming, or blackening.
+      // =========================================================================
+      // DYNAMIC 3D QUEUE LIST FOLLOW PHYSICS (Wave-lag + Velocity Adaptive Spring)
+      // "delayed a bit so it kinda like a wave. also the faster i move the visualizer, the faster it goes"
+      // =========================================================================
+      if (isFirstQueueFrame) {
+        queuePixelX = pixelX;
+        queuePixelY = pixelY;
+        queuePixelZ = pixelZ;
+        queueRotX = stageGroup.rotation.x;
+        queueRotY = stageGroup.rotation.y;
+        queueRotZ = stageGroup.rotation.z;
+        queueScale = compositeScale;
+        isFirstQueueFrame = false;
+      }
+
+      const targetPixelX = pixelX;
+      const targetPixelY = pixelY;
+      const targetPixelZ = pixelZ;
+      const targetRotX = stageGroup.rotation.x;
+      const targetRotY = stageGroup.rotation.y;
+      const targetRotZ = stageGroup.rotation.z;
+
+      const diffPxX = targetPixelX - queuePixelX;
+      const diffPxY = targetPixelY - queuePixelY;
+      const diffPxZ = targetPixelZ - queuePixelZ;
+      const diffRotX = targetRotX - queueRotX;
+      const diffRotY = targetRotY - queueRotY;
+
+      const linearDist = Math.hypot(diffPxX, diffPxY, diffPxZ);
+      const angularDist = Math.hypot(diffRotX, diffRotY);
+
+      // Movement intensity / speed ratio [0..1]
+      const speedFactor = Math.min(1.0, linearDist / 140 + angularDist / 0.45);
+
+      // Adaptive follow lerp:
+      // Smooth, calm wave lag behind the visualizer
+      const followLerp = 0.045 + speedFactor * 0.075;
+      const rotFollowLerp = 0.05 + speedFactor * 0.07;
+
+      queuePixelX += diffPxX * followLerp;
+      queuePixelY += diffPxY * followLerp;
+      queuePixelZ += diffPxZ * followLerp;
+
+      queueRotX += diffRotX * rotFollowLerp;
+      queueRotY += diffRotY * rotFollowLerp;
+      queueRotZ += (targetRotZ - queueRotZ) * rotFollowLerp;
+      queueScale += (compositeScale - queueScale) * 0.10;
+
+      // Velocity for fluid wave tilt & banking
+      const velX = diffPxX * followLerp;
+      const velY = diffPxY * followLerp;
+
+      // Gentle wave tilt angles (in degrees): banks and pitches smoothly into the wave
+      const waveTiltZ = Math.max(-9, Math.min(9, -velX * 0.06));
+      const waveTiltX = Math.max(-7, Math.min(7, velY * 0.05));
+      const waveTiltY = Math.max(-9, Math.min(9, -velX * 0.045));
+
+      // Slower harmonic wave undulation (creates serene floating oscillation)
+      if (linearDist > 0.4 || angularDist > 0.008) {
+        queueWavePhase += delta * (4.5 + speedFactor * 4.5);
+      }
+      const waveMotionAmplitude = Math.min(6, linearDist * 0.035 + angularDist * 8);
+      const waveUndulationY = Math.sin(queueWavePhase) * waveMotionAmplitude;
+      const waveUndulationZ = Math.cos(queueWavePhase) * (waveMotionAmplitude * 0.8);
+
+      // Apply dynamic 3D transform to queueStageRef
+      queueRotEuler.set(
+        queueRotX + (waveTiltX * Math.PI) / 180,
+        queueRotY + (waveTiltY * Math.PI) / 180,
+        queueRotZ + (waveTiltZ * Math.PI) / 180
+      );
+      queueRotMatrix.makeRotationFromEuler(queueRotEuler);
+      const qEl = queueRotMatrix.elements;
+      const qs = queueScale;
+
+      const qr00 = (qEl[0] * qs).toFixed(6);
+      const qr01 = (-qEl[1] * qs).toFixed(6);
+      const qr02 = (qEl[2] * qs).toFixed(6);
+
+      const qr10 = (-qEl[4] * qs).toFixed(6);
+      const qr11 = (qEl[5] * qs).toFixed(6);
+      const qr12 = (-qEl[6] * qs).toFixed(6);
+
+      const qr20 = (qEl[8] * qs).toFixed(6);
+      const qr21 = (-qEl[9] * qs).toFixed(6);
+      const qr22 = (qEl[10] * qs).toFixed(6);
+
+      const qtx = queuePixelX.toFixed(2);
+      const qty = (queuePixelY + waveUndulationY).toFixed(2);
+      const qtz = (queuePixelZ + waveUndulationZ).toFixed(2);
+
+      if (queueStageRef.current) {
+        queueStageRef.current.style.transform = `matrix3d(
+          ${qr00}, ${qr01}, ${qr02}, 0,
+          ${qr10}, ${qr11}, ${qr12}, 0,
+          ${qr20}, ${qr21}, ${qr22}, 0,
+          ${qtx}, ${qty}, ${qtz}, 1
+        )`;
+      }
+
+      // Dynamic wave flex / skew on the queue card stack container (gentle)
+      if (queueCardStackRef.current) {
+        const cardWaveSkewY = Math.max(-3, Math.min(3, -velX * 0.025));
+        const cardWaveSkewX = Math.max(-2.5, Math.min(2.5, velY * 0.02));
+        queueCardStackRef.current.style.transform = `skew(${cardWaveSkewX.toFixed(1)}deg, ${cardWaveSkewY.toFixed(1)}deg)`;
+      }
+
+      // Dynamic Perspective Clarity
       const camDistance = camera.position.z;
       const distRatio = Math.max(0.5, camDistance / 32);
 
       // Visualizer animations: Whole visualizer surface reacts directly with audio and hover displacement
       if (mode === 'particles' && particlesMesh) {
         const positions = particlesMesh.geometry.attributes.position.array as Float32Array;
-        // As perspective distance grows, increase particle size relative to camera distance so particles seamlessly coalesce without subpixel darkness
         pMaterial.size = (0.22 + smoothBass * 0.035) * Math.pow(distRatio, 0.9);
 
-        // Area of influence for hover elevation around the mouse cursor
-        const hoverRadius = 5.8;
+        // Responsive hover influence radius
+        const hoverRadius = 8.5;
         const hoverRadiusSq = hoverRadius * hoverRadius;
 
         for (let i = 0; i < numParticles; i++) {
           const baseX = basePPositions[i * 3];
           const baseY = basePPositions[i * 3 + 1];
-          const dist = Math.sqrt(baseX * baseX + baseY * baseY);
-          const normDist = Math.min(1.0, dist / half);
 
           let zDisplacement = 0;
-          let xyPush = 0;
+          let xyPushX = 0;
+          let xyPushY = 0;
 
-          if (playWeight === 0) {
-            // Idle state: particles rest in the exact form of the album cover with subtle holographic breath
-            zDisplacement = Math.sin(dist * 0.28 + elapsed * 0.8) * 0.1;
+          if (!hasPlayedOnce && waveTime === 0) {
+            zDisplacement = 0;
           } else {
-            // Audio frequency band for this particle based on radial distance
-            const freqIdx = Math.min(63, Math.floor(normDist * 54));
-            const freqAmp = (freq[freqIdx] || 0) / 255;
+            // =========================================================================
+            // RANDOM WAVE (Multi-directional organic sound field - smooth & balanced roll)
+            // =========================================================================
+            const u1 = baseX * 0.34 + baseY * 0.18;
+            const u2 = -baseX * 0.22 + baseY * 0.38;
+            const u3 = -baseX * 0.28 - baseY * 0.30;
 
-            // Concentric audio ripple wave
-            const wave = Math.sin(dist * 0.55 - elapsed * 2.2);
+            const w1 = Math.sin(u1 + waveTime * 1.55);
+            const w2 = Math.cos(u2 + waveTime * 1.25);
+            const w3 = Math.sin(u3 + waveTime * 1.8);
 
-            // Punchy bass lift at the center of the album cover
-            const bassPunch = Math.max(0, 1.0 - normDist * 0.85) * smoothBass * 2.8;
+            // Subtle spatial pseudo-random noise across grid
+            const noiseVal = Math.sin(baseX * 1.25 + Math.cos(baseY * 1.05)) * Math.cos(baseX * 0.75 - baseY * 1.15);
 
-            // Z displacement lifting particles into 3D space
-            zDisplacement = (wave * 0.65 + freqAmp * 2.0 + bassPunch) * playWeight;
+            // Audio frequency dispersion across coordinates
+            const freqBandIdx = Math.floor(Math.abs(Math.sin(baseX * 2.17 + baseY * 3.41)) * 48);
+            const localFreqAmp = (frozenFreq[freqBandIdx] || 0) / 255;
 
-            // Subtle dynamic fluid breathing dispersion on beats
-            xyPush = Math.sin(elapsed * 1.8 + dist * 0.8) * smoothBass * 0.1 * playWeight;
+            // Audio-reactive random wave calculation:
+            // Bass rolling swells across the full artwork (balanced & tactile)
+            const bassSwell = (w1 * 0.65 + w2 * 0.45) * (0.35 + smoothBass * 1.75);
+            // Mid-frequency rolling ridges + spatial noise
+            const midsRoll = (w3 * 0.5 + noiseVal * 0.3) * (0.24 + smoothMids * 1.2 + localFreqAmp * 0.7);
+            // High-frequency fine sparkling ripples
+            const highsRipple = Math.sin(baseX * 2.0 + baseY * 1.8 + waveTime * 2.4) * (smoothHighs * 0.25);
+
+            zDisplacement = bassSwell + midsRoll + highsRipple;
+
+            // Subtle organic lateral push (fluid wave dispersion)
+            xyPushX = Math.cos(u1 + waveTime * 1.2) * (smoothBass * 0.065);
+            xyPushY = Math.sin(u2 + waveTime * 1.2) * (smoothBass * 0.065);
           }
 
-          // Dynamic hover elevation: particles lift up in 3D right where the mouse cursor hovers!
+          // =========================================================================
+          // DYNAMIC HOVER WAVE & TACTILE ELEVATION (Silky & Responsive)
+          // =========================================================================
           let hoverLiftZ = 0;
           let hoverPushX = 0;
           let hoverPushY = 0;
@@ -700,50 +897,53 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
             if (mDistSq < hoverRadiusSq) {
               const mDist = Math.sqrt(mDistSq);
-              // Ultra-smoothstep bell curve (C2 continuous) for seamless transition without sharp edges
               const t = 1.0 - mDist / hoverRadius;
               const smoothT = t * t * (3.0 - 2.0 * t);
               const bellPeak = smoothT * smoothT;
 
-              // Silky, gentle undulating breath lift (lowered height: ~1.65 max stretch, tight and refined)
-              const gentleLift = Math.sin(elapsed * 2.8 + mDist * 1.6) * 0.08 * bellPeak;
-              const baseLift = (bellPeak * 1.65 + gentleLift) * smoothHoverStrength;
-              
-              // Stretches outward toward cursor: forward (+Z) if in front, backward (-Z) if cursor is behind
-              hoverLiftZ = baseLift * smoothHoverZSign;
+              // Propagating ripple wave spreading outward from cursor location
+              const ripple = Math.sin(mDist * 1.7 - hoverWaveTime * 4.2) * smoothT * 0.35;
 
-              // Soft radial displacement pushing gently outward
-              const repel = smoothT * 0.14 * smoothHoverStrength;
-              hoverPushX = (mdx / (mDist + 0.08)) * repel;
-              hoverPushY = (mdy / (mDist + 0.08)) * repel;
+              // Smooth 3D tactile elevation toward the cursor/viewer
+              const totalHoverZ = (bellPeak * 1.55 + ripple) * smoothHoverStrength;
+              hoverLiftZ = totalHoverZ * smoothHoverZSign;
+
+              // Soft radial particle dispersion
+              const repel = (smoothT * 0.13 + Math.cos(mDist * 1.7 - hoverWaveTime * 4.2) * smoothT * 0.04) * smoothHoverStrength;
+              const dirLen = mDist + 0.12;
+              hoverPushX = (mdx / dirLen) * repel;
+              hoverPushY = (mdy / dirLen) * repel;
             }
           }
 
-          const radDirX = dist > 0.01 ? baseX / dist : 0;
-          const radDirY = dist > 0.01 ? baseY / dist : 0;
-
-          positions[i * 3] = baseX + radDirX * xyPush + hoverPushX;
-          positions[i * 3 + 1] = baseY + radDirY * xyPush + hoverPushY;
+          positions[i * 3] = baseX + xyPushX + hoverPushX;
+          positions[i * 3 + 1] = baseY + xyPushY + hoverPushY;
           positions[i * 3 + 2] = zDisplacement + hoverLiftZ;
         }
         particlesMesh.geometry.attributes.position.needsUpdate = true;
       } else if (mode === 'clothWave' && clothMesh) {
         const positions = clothMesh.geometry.attributes.position.array as Float32Array;
         const count = positions.length / 3;
-        const hoverRadius = 6.0;
+        const hoverRadius = 8.5;
         const hoverRadiusSq = hoverRadius * hoverRadius;
 
         for (let i = 0; i < count; i++) {
           const u = positions[i * 3];
           const v = positions[i * 3 + 1];
-          const dist = Math.sqrt(u * u + v * v);
-          let waveZ = 0;
 
-          if (playWeight === 0) {
-            waveZ = Math.sin(u * 0.25 + elapsed * 0.8) * 0.15;
-          } else {
-            waveZ = Math.sin(dist * 0.45 - elapsed * 1.1) * (0.6 + smoothMids * 1.2) * playWeight;
-          }
+          // Multi-directional random wave (balanced)
+          const u1 = u * 0.34 + v * 0.18;
+          const u2 = -u * 0.22 + v * 0.38;
+          const u3 = -u * 0.28 - v * 0.30;
+
+          const w1 = Math.sin(u1 + waveTime * 1.55);
+          const w2 = Math.cos(u2 + waveTime * 1.25);
+          const w3 = Math.sin(u3 + waveTime * 1.8);
+          const noiseVal = Math.sin(u * 1.25 + Math.cos(v * 1.05)) * Math.cos(u * 0.75 - v * 1.15);
+
+          const bassSwell = (w1 * 0.65 + w2 * 0.45) * (0.35 + smoothBass * 1.75);
+          const midsRoll = (w3 * 0.5 + noiseVal * 0.3) * (0.24 + smoothMids * 1.2);
+          const waveZ = hasPlayedOnce || waveTime > 0 ? bassSwell + midsRoll : 0;
 
           let hoverLiftZ = 0;
           if (smoothHoverStrength > 0.001) {
@@ -752,8 +952,10 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
             const mDistSq = mdx * mdx + mdy * mdy;
             if (mDistSq < hoverRadiusSq) {
               const mDist = Math.sqrt(mDistSq);
-              const bell = Math.cos((mDist / hoverRadius) * Math.PI * 0.5);
-              hoverLiftZ = bell * bell * 1.45 * smoothHoverStrength * smoothHoverZSign;
+              const t = 1.0 - mDist / hoverRadius;
+              const smoothT = t * t * (3.0 - 2.0 * t);
+              const ripple = Math.sin(mDist * 1.7 - hoverWaveTime * 4.2) * smoothT * 0.32;
+              hoverLiftZ = (smoothT * smoothT * 1.5 + ripple) * smoothHoverStrength * smoothHoverZSign;
             }
           }
 
@@ -761,15 +963,15 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         }
         clothMesh.geometry.attributes.position.needsUpdate = true;
       } else if (mode === 'p5Vinyl' && vinylGroup) {
-        if (playWeight > 0.001) {
-          vinylGroup.rotation.z -= (0.015 + smoothMids * 0.015) * playWeight;
-          if (shardsGroup) shardsGroup.rotation.z += (0.008 + smoothHighs * 0.01) * playWeight;
+        if (playing) {
+          vinylGroup.rotation.z -= (0.015 + smoothMids * 0.015);
+          if (shardsGroup) shardsGroup.rotation.z += (0.008 + smoothHighs * 0.01);
         }
         if (shardsGroup && smoothHoverStrength > 0.001) {
           shardsGroup.children.forEach((shard) => {
             const sDist = Math.hypot(shard.position.x - smoothHoverX, shard.position.y - smoothHoverY);
-            if (sDist < 5.0) {
-              shard.position.z += (5.0 - sDist) * 0.05 * smoothHoverStrength * smoothHoverZSign;
+            if (sDist < 6.0) {
+              shard.position.z += (6.0 - sDist) * 0.06 * smoothHoverStrength * smoothHoverZSign;
               shard.rotation.x += 0.02;
               shard.rotation.y += 0.02;
             }
@@ -777,16 +979,18 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         }
       } else if (mode === 'spectrum3D' && spectrumBarsGroup) {
         for (let b = 0; b < barCount; b++) {
-          const val = (freq[b * 2] || 0) / 255;
+          const val = (frozenFreq[b * 2] || 0) / 255;
           const bar = barMeshes[b];
-          let targetH = Math.max(0.08, val * 4.5 * playWeight);
+          let targetH = Math.max(0.08, val * 4.5);
           if (smoothHoverStrength > 0.001) {
             const bDist = Math.hypot(bar.position.x - smoothHoverX, bar.position.y - smoothHoverY);
             if (bDist < 6.0) {
               targetH += (6.0 - bDist) * 0.45 * smoothHoverStrength;
             }
           }
-          bar.scale.y += (targetH - bar.scale.y) * 0.15;
+          if (playing || smoothHoverStrength > 0.001) {
+            bar.scale.y += (targetH - bar.scale.y) * 0.15;
+          }
         }
       }
 
@@ -831,7 +1035,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       coverTexture.dispose();
       renderer.dispose();
     };
-  }, [mode, currentTrack, isPlaying, autoRotate, currentTheme]);
+  }, [mode, currentTrack, currentTheme]);
 
   // Pointer drag to orbit, multi-touch pinch to zoom, OR right-click / shift-drag to move
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -855,6 +1059,15 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     } else {
       isDraggingRef.current = true;
     }
+
+    // Stop any existing drift immediately when user grabs the visualizer
+    rotVelRef.current = { x: 0, y: 0 };
+    panVelRef.current = { x: 0, y: 0 };
+    lastPointerSampleRef.current = {
+      lastX: e.clientX,
+      lastY: e.clientY,
+      time: performance.now(),
+    };
 
     dragStartRef.current = {
       x: e.clientX,
@@ -899,6 +1112,30 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
     if (!isDraggingRef.current && !isPanningRef.current) return;
 
+    // Track instantaneous release flick velocity
+    const now = performance.now();
+    const dt = Math.max(0.005, (now - lastPointerSampleRef.current.time) / 1000);
+    const moveDeltaX = e.clientX - lastPointerSampleRef.current.lastX;
+    const moveDeltaY = e.clientY - lastPointerSampleRef.current.lastY;
+
+    if (isDraggingRef.current) {
+      const instantVx = ((moveDeltaY * 0.007) / (dt * 60)) * 0.35;
+      const instantVy = ((moveDeltaX * 0.007) / (dt * 60)) * 0.35;
+      rotVelRef.current.x = rotVelRef.current.x * 0.35 + instantVx * 0.65;
+      rotVelRef.current.y = rotVelRef.current.y * 0.35 + instantVy * 0.65;
+    } else if (isPanningRef.current) {
+      const instantPx = ((moveDeltaX * 0.012) / (dt * 60)) * 0.35;
+      const instantPy = ((-moveDeltaY * 0.012) / (dt * 60)) * 0.35;
+      panVelRef.current.x = panVelRef.current.x * 0.35 + instantPx * 0.65;
+      panVelRef.current.y = panVelRef.current.y * 0.35 + instantPy * 0.65;
+    }
+
+    lastPointerSampleRef.current = {
+      lastX: e.clientX,
+      lastY: e.clientY,
+      time: now,
+    };
+
     const deltaX = e.clientX - dragStartRef.current.x;
     const deltaY = e.clientY - dragStartRef.current.y;
 
@@ -929,6 +1166,26 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
       pinchStartDistRef.current = null;
     }
     if (activePointersRef.current.size === 0) {
+      const now = performance.now();
+      const timeSinceLastSample = now - lastPointerSampleRef.current.time;
+      if (timeSinceLastSample > 60) {
+        // User held still before releasing: damp out the velocity cleanly
+        const decay = Math.max(0, 1 - (timeSinceLastSample - 60) / 100);
+        rotVelRef.current.x *= decay;
+        rotVelRef.current.y *= decay;
+        panVelRef.current.x *= decay;
+        panVelRef.current.y *= decay;
+      }
+
+      // Gentle clamp on maximum drift speed (smooth, comfortable drift)
+      const maxRotVel = 0.016;
+      rotVelRef.current.x = Math.max(-maxRotVel, Math.min(maxRotVel, rotVelRef.current.x));
+      rotVelRef.current.y = Math.max(-maxRotVel, Math.min(maxRotVel, rotVelRef.current.y));
+
+      const maxPanVel = 0.055;
+      panVelRef.current.x = Math.max(-maxPanVel, Math.min(maxPanVel, panVelRef.current.x));
+      panVelRef.current.y = Math.max(-maxPanVel, Math.min(maxPanVel, panVelRef.current.y));
+
       isDraggingRef.current = false;
       isPanningRef.current = false;
     }
@@ -959,6 +1216,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   };
 
   const handleResetView = () => {
+    rotVelRef.current = { x: 0, y: 0 };
+    panVelRef.current = { x: 0, y: 0 };
     rotationRef.current = { ...defaultRotation };
     stagePosRef.current = { x: 0, y: 0 };
     zoomRef.current = 1.0;
@@ -1084,7 +1343,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                   ? 'translate3d(-50%, -190px, 30px)'
                   : 'translate3d(-50%, -290px, 35px)',
                 transformStyle: 'preserve-3d',
-                width: isMobile ? '88vw' : '440px',
+                width: isMobile ? '88vw' : '460px',
                 maxWidth: '92vw',
               }}
             >
@@ -1098,56 +1357,76 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                   clipPath: 'polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px))',
                 }}
               >
-                <div className="w-2.5 h-2.5 rotate-45" style={{ backgroundColor: currentTheme.accent }} />
-                <span className="font-mono text-[10px] sm:text-xs font-bold text-zinc-300 group-hover:text-white">
-                  NO SYNCED LYRICS // <span className="text-[#ffd700] font-black underline">[ + IMPORT .LRC / PASTE ]</span>
-                </span>
+                {isFetchingLyrics ? (
+                  <>
+                    <div className="w-2.5 h-2.5 rounded-full animate-ping shrink-0" style={{ backgroundColor: currentTheme.accent }} />
+                    <span className="font-mono text-[10px] sm:text-xs font-bold text-zinc-200">
+                      STREAMING ONLINE LYRICS (LRCLIB)...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-2.5 h-2.5 rotate-45 shrink-0" style={{ backgroundColor: currentTheme.accent }} />
+                    <span className="font-mono text-[10px] sm:text-xs font-bold text-zinc-300 group-hover:text-white">
+                      NO LYRICS // <span className="text-[#ffd700] font-black underline">[ STREAM ONLINE / IMPORT ]</span>
+                    </span>
+                  </>
+                )}
               </button>
             </div>
           )}
 
+          </div>
+
           {/* ============================================================== */}
           {/* 2. 3D FLOATING QUEUE ON THE RIGHT:                            */}
-          {/*    Locked rigidly to the visualizer on the exact same 3D axis */}
-          {/*    - Faces the same direction as the visualizer               */}
-          {/*    - Positioned with a distinct generous gap to the right     */}
-          {/*    - Revolves 360° in all directions with the visualizer      */}
+          {/*    Follows with dynamic wave lag & velocity-adaptive spring   */}
+          {/*    "delayed a bit so it kinda like a wave. also the faster    */}
+          {/*     i move the visualizer, the faster it goes"                */}
           {/* ============================================================== */}
-          {tracks.length > 0 && (
-            <div
-              className={`absolute transition-opacity duration-300 ${
-                isQueueExpanded
-                  ? 'opacity-100 pointer-events-auto'
-                  : 'opacity-0 pointer-events-none'
-              }`}
-              style={{
-                // Offset generously to the right (+370px) on desktop to provide clean spacing from visualizer
-                transform: isMobile
-                  ? 'translate3d(-50%, 60px, 25px)'
-                  : 'translate3d(370px, -50%, 25px)',
-                transformStyle: 'preserve-3d',
-                width: isMobile ? '92vw' : undefined,
-                maxWidth: isMobile ? '360px' : undefined,
-              }}
-              onPointerDown={(e) => {
-                // If interacting with scrollable playlist or buttons, stop propagation;
-                // otherwise allow dragging on header/frame to rotate the 3D rig!
-                if ((e.target as HTMLElement).closest('.overflow-y-auto, button, input')) {
-                  e.stopPropagation();
-                }
-              }}
-            >
-              {/* Persona 5 3D Card Stack Container (Video 181654 reference style) */}
+          <div
+            ref={queueStageRef}
+            className="absolute left-1/2 top-1/2 w-0 h-0 pointer-events-none"
+            style={{
+              transformStyle: 'preserve-3d',
+            }}
+          >
+            {tracks.length > 0 && (
               <div
-                className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black relative"
+                className={`absolute transition-opacity duration-300 ${
+                  isQueueExpanded
+                    ? 'opacity-100 pointer-events-auto'
+                    : 'opacity-0 pointer-events-none'
+                }`}
                 style={{
-                  clipPath:
-                    'polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px))',
-                  boxShadow: `6px 6px 0px ${currentTheme.accent}, 11px 11px 0px #000`,
-                  transform: 'translateZ(10px)',
+                  // Offset generously to the right (+370px) on desktop to provide clean spacing from visualizer
+                  transform: isMobile
+                    ? 'translate3d(-50%, 60px, 25px)'
+                    : 'translate3d(370px, -50%, 25px)',
                   transformStyle: 'preserve-3d',
+                  width: isMobile ? '92vw' : undefined,
+                  maxWidth: isMobile ? '360px' : undefined,
+                }}
+                onPointerDown={(e) => {
+                  // If interacting with scrollable playlist or buttons, stop propagation;
+                  // otherwise allow dragging on header/frame to rotate the 3D rig!
+                  if ((e.target as HTMLElement).closest('.overflow-y-auto, button, input')) {
+                    e.stopPropagation();
+                  }
                 }}
               >
+                {/* Persona 5 3D Card Stack Container with dynamic wave flex */}
+                <div
+                  ref={queueCardStackRef}
+                  className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black relative transition-transform duration-75"
+                  style={{
+                    clipPath:
+                      'polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px))',
+                    boxShadow: `6px 6px 0px ${currentTheme.accent}, 11px 11px 0px #000`,
+                    transform: 'translateZ(10px)',
+                    transformStyle: 'preserve-3d',
+                  }}
+                >
                 {/* 3D Queue Header */}
                 <div className="flex items-center justify-between pb-1.5 sm:pb-2 mb-1.5 sm:mb-2 border-b border-white/10">
                   <div className="flex items-center gap-1.5 sm:gap-2">

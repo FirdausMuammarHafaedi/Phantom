@@ -18,6 +18,7 @@ import { ThemeSelector } from './components/ThemeSelector';
 import { TopBar } from './components/TopBar';
 import { LyricsModal } from './components/LyricsModal';
 import { parseLrcString } from './utils/lrcParser';
+import { fetchOnlineLyrics } from './utils/onlineLyrics';
 import confetti from 'canvas-confetti';
 import { FolderDown } from 'lucide-react';
 import {
@@ -336,6 +337,50 @@ export default function App() {
     }
   };
 
+  // Automatic online lyrics stream whenever a track is played without lyrics
+  const [isFetchingLyrics, setIsFetchingLyrics] = useState(false);
+  const [lyricsNotice, setLyricsNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!currentTrack || (currentTrack.lyrics && currentTrack.lyrics.length > 0)) {
+      return;
+    }
+
+    const abortCtrl = new AbortController();
+    let isCancelled = false;
+
+    const streamLyrics = async () => {
+      setIsFetchingLyrics(true);
+      try {
+        const result = await fetchOnlineLyrics(
+          currentTrack.title,
+          currentTrack.artist,
+          currentTrack.duration,
+          abortCtrl.signal
+        );
+
+        if (!isCancelled && result && result.lyrics.length > 0) {
+          await handleSaveLyrics(currentTrack.id, result.lyrics);
+          setLyricsNotice(`Synced lyrics streamed for "${result.trackName || currentTrack.title}"!`);
+          setTimeout(() => setLyricsNotice(null), 4000);
+        }
+      } catch {
+        // Ignored if cancelled or offline
+      } finally {
+        if (!isCancelled) {
+          setIsFetchingLyrics(false);
+        }
+      }
+    };
+
+    streamLyrics();
+
+    return () => {
+      isCancelled = true;
+      abortCtrl.abort();
+    };
+  }, [currentTrack?.id]);
+
   // Import files from input or drop with permanent IndexedDB persistence & auto LRC pairing
   const handleImportFiles = async (fileList: FileList) => {
     playP5Sound('slash');
@@ -481,6 +526,19 @@ export default function App() {
         </div>
       )}
 
+      {/* ONLINE LYRICS STREAMED NOTIFICATION */}
+      {lyricsNotice && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-fade-in">
+          <div
+            className="p5-badge-cut px-5 py-2.5 border-2 border-black flex items-center gap-2.5 font-display text-xs tracking-wider shadow-[4px_4px_0px_#000]"
+            style={{ backgroundColor: currentTheme.accent, color: currentTheme.textOnAccent }}
+          >
+            <span>★</span>
+            <span className="font-bold uppercase">{lyricsNotice}</span>
+          </div>
+        </div>
+      )}
+
       {/* TOP BAR */}
       <TopBar
         onOpenLibrary={() => setIsLibraryOpen(true)}
@@ -509,6 +567,7 @@ export default function App() {
           isQueueExpanded={isQueueExpanded}
           onToggleQueue={() => setIsQueueExpanded(!isQueueExpanded)}
           onOpenLyricsModal={() => setIsLyricsModalOpen(true)}
+          isFetchingLyrics={isFetchingLyrics}
         />
       </main>
 
