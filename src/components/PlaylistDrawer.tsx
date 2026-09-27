@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Track, ColorTheme } from '../types';
 import {
   FolderOpen,
@@ -11,9 +11,17 @@ import {
   Pause,
   HardDrive,
   Sparkles,
-  Volume2
+  Volume2,
+  Clock,
 } from 'lucide-react';
 import { playP5Sound } from '../utils/sfx';
+import {
+  getPlaybackHistory,
+  clearPlaybackHistory,
+  removeHistoryItem,
+  formatTimeAgo,
+  HistoryRecord,
+} from '../utils/historyStorage';
 
 interface Props {
   isOpen: boolean;
@@ -41,9 +49,30 @@ export const PlaylistDrawer: React.FC<Props> = ({
   currentTheme,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'all' | 'favorites' | 'lossless'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'favorites' | 'lossless' | 'history'>('all');
+  const [history, setHistory] = useState<HistoryRecord[]>(() => getPlaybackHistory(tracks));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync lightweight compact history when drawer opens, tracks change, or history updates
+  useEffect(() => {
+    if (isOpen) {
+      setHistory(getPlaybackHistory(tracks));
+    }
+  }, [isOpen, tracks]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<HistoryRecord[]>;
+      if (custom.detail) {
+        setHistory(custom.detail);
+      } else {
+        setHistory(getPlaybackHistory(tracks));
+      }
+    };
+    window.addEventListener('p5_history_updated', handler);
+    return () => window.removeEventListener('p5_history_updated', handler);
+  }, [tracks]);
 
   // Format seconds to mm:ss
   const formatTime = (secs: number) => {
@@ -64,6 +93,15 @@ export const PlaylistDrawer: React.FC<Props> = ({
     if (activeTab === 'favorites') return t.isFavorite;
     if (activeTab === 'lossless') return t.format === 'FLAC' || t.format === 'WAV';
     return true;
+  });
+
+  // Filtered history (lightweight localStorage)
+  const filteredHistory = history.filter((item) => {
+    const matchesSearch =
+      item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.artist.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.album.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesSearch;
   });
 
   const totalSeconds = tracks.reduce((acc, t) => acc + t.duration, 0);
@@ -228,7 +266,7 @@ export const PlaylistDrawer: React.FC<Props> = ({
                 playP5Sound('toggle');
                 setActiveTab('lossless');
               }}
-              className={`pb-2 px-3 text-xs font-mono font-bold tracking-wider transition-all cursor-pointer ${
+              className={`pb-2 px-3 text-xs font-mono font-bold tracking-wider transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === 'lossless'
                   ? 'text-[#00d2ff] border-b-2 border-[#00d2ff] font-black'
                   : 'text-white/50 hover:text-white'
@@ -236,12 +274,167 @@ export const PlaylistDrawer: React.FC<Props> = ({
             >
               HI-RES ({tracks.filter((t) => t.format === 'FLAC' || t.format === 'WAV').length})
             </button>
+            <button
+              onClick={() => {
+                playP5Sound('toggle');
+                setActiveTab('history');
+              }}
+              className={`pb-2 px-3 text-xs font-mono font-bold tracking-wider transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'history'
+                  ? 'border-b-2 font-black'
+                  : 'text-white/50 hover:text-white'
+              }`}
+              style={{
+                color: activeTab === 'history' ? '#ff9900' : undefined,
+                borderBottomColor: activeTab === 'history' ? '#ff9900' : 'transparent',
+              }}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              HISTORY ({history.length})
+            </button>
           </div>
         </div>
 
         {/* Tracks List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-1.5 scrollbar-thin">
-          {filteredTracks.length === 0 ? (
+          {/* Subheader banner for history tab */}
+          {activeTab === 'history' && (
+            <div className="flex items-center justify-between px-2.5 py-1.5 mb-2 bg-[#12141c] border border-white/10 text-[10px] font-mono">
+              <div className="flex items-center gap-1.5 text-white/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#ff9900] inline-block animate-pulse" />
+                <span>COMPACT REFERENCE STORAGE • UNLIMITED ENTRIES (~35B/SONG)</span>
+              </div>
+              {history.length > 0 && (
+                <button
+                  onClick={() => {
+                    playP5Sound('click');
+                    if (window.confirm('Clear all playback history?')) {
+                      clearPlaybackHistory();
+                    }
+                  }}
+                  className="flex items-center gap-1 text-white/40 hover:text-red-400 transition-colors cursor-pointer font-bold"
+                  title="Clear entire playback history"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>CLEAR ALL</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'history' ? (
+            filteredHistory.length === 0 ? (
+              <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-white/40">
+                <Clock className="w-10 h-10 mb-3 text-white/20" />
+                <p className="text-sm font-bold text-white/70">No Playback History Yet</p>
+                <p className="text-xs font-mono mt-1">
+                  Played songs will automatically be recorded here in ultra-lightweight localStorage.
+                </p>
+              </div>
+            ) : (
+              filteredHistory.map((item, idx) => {
+                const liveTrack = tracks.find((t) => t.id === item.trackId);
+                const isCurrent = currentTrack?.id === item.trackId;
+
+                return (
+                  <div
+                    key={`${item.trackId}-${item.playedAt}`}
+                    onClick={() => {
+                      if (liveTrack) {
+                        playP5Sound('select');
+                        onSelectTrack(liveTrack);
+                      }
+                    }}
+                    className={`group relative p-2 flex items-center gap-3 transition-all border-2 border-black ${
+                      liveTrack ? 'cursor-pointer' : 'cursor-default opacity-60'
+                    } ${
+                      isCurrent
+                        ? 'bg-[#181922]'
+                        : 'bg-[#101116]/80 hover:bg-[#15161f]'
+                    }`}
+                    style={{
+                      boxShadow: isCurrent ? `3px 3px 0px ${currentTheme.accent}` : '2px 2px 0px #000',
+                      clipPath: 'polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px))',
+                    }}
+                  >
+                    {/* Index or Playing icon */}
+                    <div className="w-6 text-center text-xs font-mono text-white/40 flex-shrink-0">
+                      {isCurrent && isPlaying ? (
+                        <Volume2 className="w-4 h-4 mx-auto animate-pulse" style={{ color: currentTheme.accent }} />
+                      ) : (
+                        <span>{String(idx + 1).padStart(2, '0')}</span>
+                      )}
+                    </div>
+
+                    {/* Thumbnail */}
+                    <div className="relative w-10 h-10 bg-black flex-shrink-0 border border-white/10 overflow-hidden">
+                      <img
+                        src={item.coverUrl || (liveTrack?.coverUrl ?? '')}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                      {liveTrack && (
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                          {isCurrent && isPlaying ? (
+                            <Pause className="w-4 h-4 text-white" />
+                          ) : (
+                            <Play className="w-4 h-4 text-white fill-white" />
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Meta */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h4
+                          className="text-xs font-bold truncate"
+                          style={{ color: isCurrent ? currentTheme.accent : '#ffffff' }}
+                        >
+                          {item.title}
+                        </h4>
+                        {!liveTrack && (
+                          <span className="text-[9px] px-1 py-0.2 bg-red-900/40 text-red-300 font-mono uppercase">
+                            REMOVED
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-white/50 truncate font-mono">
+                        {item.artist} • {item.album}
+                      </p>
+                    </div>
+
+                    {/* Time Ago & Format */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span
+                        className="text-[9px] font-mono px-1.5 py-0.5 uppercase tracking-wider bg-white/5 text-amber-300/90 border border-amber-500/20"
+                        title={new Date(item.playedAt).toLocaleString()}
+                      >
+                        {formatTimeAgo(item.playedAt)}
+                      </span>
+
+                      <span className="text-xs font-mono text-white/40 hidden sm:inline">
+                        {formatTime(item.duration)}
+                      </span>
+
+                      {/* Remove single entry */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playP5Sound('click');
+                          removeHistoryItem(item.trackId, tracks);
+                        }}
+                        className="p-1 text-white/20 hover:text-red-400 transition-colors cursor-pointer"
+                        title="Remove from history"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )
+          ) : filteredTracks.length === 0 ? (
             <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-white/40">
               <HardDrive className="w-10 h-10 mb-3 text-white/20" />
               <p className="text-sm font-bold text-white/70">No Audio Files Found</p>
@@ -370,10 +563,20 @@ export const PlaylistDrawer: React.FC<Props> = ({
         <div className="p-4 border-t border-white/10 bg-[#090a0d] flex items-center justify-between text-xs font-mono text-white/50">
           <div className="flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5" style={{ color: currentTheme.accent }} />
-            <span>100% OFFLINE LOCAL ENGINE</span>
+            <span>
+              {activeTab === 'history'
+                ? 'LIGHTWEIGHT STORAGE (LOCALSTORAGE)'
+                : '100% OFFLINE LOCAL ENGINE'}
+            </span>
           </div>
           <div>
-            <span>{tracks.length} TRACKS</span> • <span>{formatTime(totalSeconds)}</span>
+            {activeTab === 'history' ? (
+              <span>{history.length} LOGGED</span>
+            ) : (
+              <>
+                <span>{tracks.length} TRACKS</span> • <span>{formatTime(totalSeconds)}</span>
+              </>
+            )}
           </div>
         </div>
       </div>

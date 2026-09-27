@@ -28,6 +28,7 @@ import {
   deleteTrackFromStorage,
   updateTrackFavoriteInStorage,
 } from './utils/trackStorage';
+import { recordPlaybackHistory } from './utils/historyStorage';
 
 export default function App() {
   const [tracks, setTracks] = useState<Track[]>(INITIAL_DEMO_TRACKS);
@@ -124,6 +125,7 @@ export default function App() {
     const readyTrack = ensureTrackPlayable(track);
     setCurrentTrack(readyTrack);
     setDuration(readyTrack.duration);
+    recordPlaybackHistory(readyTrack, tracksRef.current);
     try {
       await globalAudioEngine.playTrack(readyTrack);
       setIsPlaying(true);
@@ -210,6 +212,7 @@ export default function App() {
     } else {
       if (currentTrack) {
         const ready = ensureTrackPlayable(currentTrack);
+        recordPlaybackHistory(ready, tracksRef.current);
         try {
           await globalAudioEngine.playTrack(ready);
           setIsPlaying(true);

@@ -53,6 +53,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const perspectiveContainerRef = useRef<HTMLDivElement>(null);
   const floatingStageRef = useRef<HTMLDivElement>(null);
+  const lyricsBubbleRef = useRef<HTMLDivElement>(null);
+  const lyricsPromptRef = useRef<HTMLButtonElement>(null);
   const queueStageRef = useRef<HTMLDivElement>(null);
   const queueCardStackRef = useRef<HTMLDivElement>(null);
 
@@ -513,6 +515,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
     let smoothHoverY = 0;
     let smoothHoverStrength = 0;
     let smoothHoverZSign = 1.0;
+    let beatPunch = 0;
 
     const render = () => {
       animationFrameId = requestAnimationFrame(render);
@@ -545,6 +548,16 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         smoothBass += (rawBass - smoothBass) * 0.075;
         smoothMids += (rawMids - smoothMids) * 0.075;
         smoothHighs += (rawHighs - smoothHighs) * 0.075;
+
+        // Snappy dynamic beat punch (instant attack on kick/snare hits, silky release decay)
+        const instantBeat = Math.max(0, rawBass - 0.18) * 1.45;
+        if (instantBeat > beatPunch) {
+          beatPunch = instantBeat;
+        } else {
+          beatPunch += (instantBeat - beatPunch) * 0.20;
+        }
+      } else {
+        beatPunch *= 0.90;
       }
       // When paused (!playing):
       // waveTime stays frozen
@@ -719,6 +732,21 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         )`;
       }
 
+      // Dynamic Beat Reaction on 3D Floating Lyrics Speech Bubble & Prompt
+      if (lyricsBubbleRef.current) {
+        const lyricBeatScale = 1.0 + beatPunch * 0.05 + smoothBass * 0.02;
+        const lyricBeatY = -beatPunch * 6.0 - smoothBass * 2.5;
+        const lyricGlow = (6 + beatPunch * 7).toFixed(1);
+        const lyricBlur = (beatPunch * 24).toFixed(1);
+        lyricsBubbleRef.current.style.transform = `translate3d(0, ${lyricBeatY.toFixed(1)}px, 20px) scale(${lyricBeatScale.toFixed(3)})`;
+        lyricsBubbleRef.current.style.boxShadow = `${lyricGlow}px ${lyricGlow}px 0px ${currentTheme.accent}, 10px 10px 0px #000, 0 0 ${lyricBlur}px ${currentTheme.accent}80`;
+      }
+
+      if (lyricsPromptRef.current) {
+        const promptBeatScale = 1.0 + beatPunch * 0.04;
+        lyricsPromptRef.current.style.transform = `scale(${promptBeatScale.toFixed(3)})`;
+      }
+
       // =========================================================================
       // DYNAMIC 3D QUEUE LIST FOLLOW PHYSICS (Wave-lag + Velocity Adaptive Spring)
       // "delayed a bit so it kinda like a wave. also the faster i move the visualizer, the faster it goes"
@@ -819,11 +847,17 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
         )`;
       }
 
-      // Dynamic wave flex / skew on the queue card stack container (gentle)
+      // Dynamic wave flex / skew & BEAT REACTION on the queue card stack container
       if (queueCardStackRef.current) {
         const cardWaveSkewY = Math.max(-3, Math.min(3, -velX * 0.025));
         const cardWaveSkewX = Math.max(-2.5, Math.min(2.5, velY * 0.02));
-        queueCardStackRef.current.style.transform = `skew(${cardWaveSkewX.toFixed(1)}deg, ${cardWaveSkewY.toFixed(1)}deg)`;
+        const queueBeatScale = 1.0 + beatPunch * 0.038 + smoothBass * 0.015;
+        const queueBeatY = -beatPunch * 5.0 - smoothBass * 2.0;
+        const qGlow = (6 + beatPunch * 6).toFixed(1);
+        const qBlur = (beatPunch * 20).toFixed(1);
+
+        queueCardStackRef.current.style.transform = `translate3d(0, ${queueBeatY.toFixed(1)}px, 10px) scale(${queueBeatScale.toFixed(3)}) skew(${cardWaveSkewX.toFixed(1)}deg, ${cardWaveSkewY.toFixed(1)}deg)`;
+        queueCardStackRef.current.style.boxShadow = `${qGlow}px ${qGlow}px 0px ${currentTheme.accent}, 11px 11px 0px #000, 0 0 ${qBlur}px ${currentTheme.accent}70`;
       }
 
       // Dynamic Perspective Clarity
@@ -1309,7 +1343,8 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
 
               {/* 3D Persona 5 Speech Bubble */}
               <div
-                className="relative bg-white text-black px-4 sm:px-6 py-2.5 sm:py-3.5 border-2 sm:border-3 border-black w-full"
+                ref={lyricsBubbleRef}
+                className="relative bg-white text-black px-4 sm:px-6 py-2.5 sm:py-3.5 border-2 sm:border-3 border-black w-full will-change-transform"
                 style={{
                   clipPath:
                     'polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px))',
@@ -1348,6 +1383,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
               }}
             >
               <button
+                ref={lyricsPromptRef}
                 onClick={(e) => {
                   e.stopPropagation();
                   onOpenLyricsModal?.();
@@ -1418,7 +1454,7 @@ export const PersonaVisualizer3D: React.FC<Props> = ({
                 {/* Persona 5 3D Card Stack Container with dynamic wave flex */}
                 <div
                   ref={queueCardStackRef}
-                  className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black relative transition-transform duration-75"
+                  className="w-full sm:w-80 max-h-[36vh] sm:max-h-[82vh] flex flex-col p-2 sm:p-2.5 bg-[#090b11]/95 backdrop-blur-2xl border-2 border-black relative will-change-transform"
                   style={{
                     clipPath:
                       'polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px))',
